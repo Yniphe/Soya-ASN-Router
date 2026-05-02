@@ -127,17 +127,17 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r4 -m "soya-asn-router v0.1.0-r4"
-git push origin v0.1.0-r4
+git tag -a v0.1.0-r5 -m "soya-asn-router v0.1.0-r5"
+git push origin v0.1.0-r5
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
 exist, the workflow creates it and uploads assets like:
 
 ```sh
-openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r4_aarch64_cortex-a53.ipk
+openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r5_aarch64_cortex-a53.ipk
 openwrt-24.10.4-mediatek-filogic-luci-app-soya-asn-router_*.ipk
-openwrt-25.12.2-mediatek-filogic-soya-asn-router_0.1.0-r4_aarch64_cortex-a53.ipk
+openwrt-25.12.2-mediatek-filogic-soya-asn-router_0.1.0-r5_aarch64_cortex-a53.ipk
 openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router_*.ipk
 SHA256SUMS
 ```

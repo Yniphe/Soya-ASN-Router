@@ -138,14 +138,6 @@ jobs:
           } >> .config
           make defconfig
 
-      - name: Stage LuCI build dependencies
-        working-directory: ${{ runner.temp }}/sdk
-        run: |
-          make package/libs/libnl-tiny/compile V=s
-          make package/utils/ucode/compile V=s
-          make package/feeds/packages/lua/compile V=s
-          make package/network/utils/iwinfo/compile V=s
-
       - name: Build OpenWrt packages
         working-directory: ${{ runner.temp }}/sdk
         run: |
