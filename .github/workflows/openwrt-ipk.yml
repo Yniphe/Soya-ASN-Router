@@ -119,19 +119,39 @@ jobs:
         run: |
           echo "src-link soya $GITHUB_WORKSPACE" >> feeds.conf.default
           ./scripts/feeds update packages luci soya
-          ./scripts/feeds install "$BACKEND_PACKAGE" "$LUCI_PACKAGE"
+          ./scripts/feeds install \
+            "$BACKEND_PACKAGE" \
+            "$LUCI_PACKAGE" \
+            luci-base \
+            rpcd-mod-luci \
+            lucihttp \
+            ucode-mod-html \
+            lua
           {
             echo "CONFIG_PACKAGE_$BACKEND_PACKAGE=m"
             echo "CONFIG_PACKAGE_$LUCI_PACKAGE=m"
+            echo "CONFIG_PACKAGE_libiwinfo=m"
+            echo "CONFIG_PACKAGE_liblua=m"
+            echo "CONFIG_PACKAGE_libnl-tiny=m"
+            echo "CONFIG_PACKAGE_libucode=m"
+            echo "CONFIG_PACKAGE_ucode=m"
           } >> .config
           make defconfig
+
+      - name: Stage LuCI build dependencies
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          make package/libs/libnl-tiny/compile V=s
+          make package/utils/ucode/compile V=s
+          make package/feeds/packages/lua/compile V=s
+          make package/network/utils/iwinfo/compile V=s
 
       - name: Build OpenWrt packages
         working-directory: ${{ runner.temp }}/sdk
         run: |
-          make "package/feeds/soya/$BACKEND_PACKAGE/compile" -j"$(nproc)" V=s \
+          make "package/feeds/soya/$BACKEND_PACKAGE/compile" V=s \
             SOYA_ASN_ROUTER_PREBUILT="$RUNNER_TEMP/prebuilt/$BACKEND_PACKAGE"
-          make "package/feeds/soya/$LUCI_PACKAGE/compile" -j"$(nproc)" V=s
+          make "package/feeds/soya/$LUCI_PACKAGE/compile" V=s
 
       - name: Collect IPK files
         working-directory: ${{ runner.temp }}/sdk
