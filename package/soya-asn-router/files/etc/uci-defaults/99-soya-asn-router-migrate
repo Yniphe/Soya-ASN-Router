@@ -1,0 +1,114 @@
+#!/bin/sh
+
+. /lib/functions.sh
+
+OLD_PACKAGE="soya-hello"
+NEW_PACKAGE="soya-asn-router"
+OLD_DATA_DIR="/etc/soya-hello"
+NEW_DATA_DIR="/etc/soya-asn-router"
+OLD_DB_PATH="$OLD_DATA_DIR/soya.db"
+NEW_DB_PATH="$NEW_DATA_DIR/soya.db"
+MIGRATION_MARKER="$NEW_DATA_DIR/.migrated-from-soya-hello"
+OLD_ROUTE_TABLE="soya_hello"
+ROUTE_RULE_PREF_BASE=19000
+ROUTE_TABLE_ID_BASE=5100
+MAX_POLICY_GROUPS=64
+
+has_asn_section=0
+migrated_legacy_asn=0
+default_interface="wan"
+should_migrate_old=0
+
+old_service_enabled=0
+[ -e /etc/rc.d/S??soya-hello ] && old_service_enabled=1
+
+mkdir -p "$NEW_DATA_DIR"
+
+[ ! -e "$MIGRATION_MARKER" ] &&
+	uci -q show "$OLD_PACKAGE" >/dev/null 2>&1 &&
+	should_migrate_old=1
+
+if [ -x /etc/init.d/soya-hello ]; then
+	/etc/init.d/soya-hello stop >/dev/null 2>&1 || true
+	/etc/init.d/soya-hello disable >/dev/null 2>&1 || true
+fi
+
+if [ "$should_migrate_old" -eq 1 ] &&
+	nft list table inet "$OLD_ROUTE_TABLE" >/dev/null 2>&1; then
+	nft delete table inet "$OLD_ROUTE_TABLE" >/dev/null 2>&1 || true
+	i=0
+	while [ "$i" -lt "$MAX_POLICY_GROUPS" ]; do
+		ip -4 rule del pref $((ROUTE_RULE_PREF_BASE + i)) >/dev/null 2>&1 || true
+		ip -4 route flush table $((ROUTE_TABLE_ID_BASE + i)) >/dev/null 2>&1 || true
+		i=$((i + 1))
+	done
+	ip -4 route flush cache >/dev/null 2>&1 || true
+fi
+
+if [ "$should_migrate_old" -eq 1 ]; then
+	cp "/etc/config/$OLD_PACKAGE" "/etc/config/$NEW_PACKAGE" 2>/dev/null || true
+fi
+
+configured_db_path="$(uci -q get "$NEW_PACKAGE".main.db_path 2>/dev/null)"
+[ -n "$configured_db_path" ] || configured_db_path="$NEW_DB_PATH"
+
+case "$configured_db_path" in
+	"$OLD_DATA_DIR"/*)
+		new_configured_db_path="$NEW_DATA_DIR/${configured_db_path#$OLD_DATA_DIR/}"
+		;;
+	*)
+		new_configured_db_path="$configured_db_path"
+		;;
+esac
+
+[ -n "$new_configured_db_path" ] || new_configured_db_path="$NEW_DB_PATH"
+
+if [ "$configured_db_path" != "$new_configured_db_path" ] &&
+	[ -f "$configured_db_path" ] &&
+	[ ! -f "$new_configured_db_path" ]; then
+	mkdir -p "${new_configured_db_path%/*}"
+	cp -p "$configured_db_path" "$new_configured_db_path" 2>/dev/null || true
+elif [ -f "$OLD_DB_PATH" ] && [ ! -f "$NEW_DB_PATH" ]; then
+	cp -p "$OLD_DB_PATH" "$NEW_DB_PATH" 2>/dev/null || true
+fi
+
+uci -q set "$NEW_PACKAGE".main.db_path="$new_configured_db_path"
+uci -q commit "$NEW_PACKAGE"
+
+mark_asn_section() {
+	has_asn_section=1
+}
+
+add_legacy_asn() {
+	local asn="$1"
+	local section
+
+	[ -n "$asn" ] || return 0
+
+	section="$(uci -q add "$NEW_PACKAGE" asn)" || return 0
+	uci -q set "$NEW_PACKAGE"."$section".enabled='1'
+	uci -q set "$NEW_PACKAGE"."$section".asn="$asn"
+	uci -q set "$NEW_PACKAGE"."$section".interface="$default_interface"
+	migrated_legacy_asn=1
+}
+
+config_load "$NEW_PACKAGE"
+config_get default_interface main default_interface "wan"
+config_foreach mark_asn_section asn
+
+if [ "$has_asn_section" -eq 0 ]; then
+	config_list_foreach main asn add_legacy_asn
+
+	if [ "$migrated_legacy_asn" -eq 1 ]; then
+		uci -q delete "$NEW_PACKAGE".main.asn
+		uci -q commit "$NEW_PACKAGE"
+	fi
+fi
+
+if [ "$old_service_enabled" -eq 1 ] && [ -x /etc/init.d/soya-asn-router ]; then
+	/etc/init.d/soya-asn-router enable >/dev/null 2>&1 || true
+fi
+
+[ "$should_migrate_old" -eq 1 ] && touch "$MIGRATION_MARKER" 2>/dev/null
+
+exit 0

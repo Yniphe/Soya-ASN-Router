@@ -1,0 +1,15 @@
+config service 'main'
+	option enabled '0'
+	option db_path '/etc/soya-asn-router/soya.db'
+	option lan_interface 'lan'
+	option default_interface 'wan'
+	option auto_apply_routes '1'
+	option route_policy_enabled '1'
+	option proxy_enabled '0'
+	option proxy_type 'http'
+	option proxy_url ''
+
+config asn
+	option enabled '1'
+	option asn 'AS15169'
+	option interface 'wan'

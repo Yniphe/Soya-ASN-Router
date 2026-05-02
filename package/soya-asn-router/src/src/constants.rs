@@ -1,0 +1,11 @@
+pub const DEFAULT_DB_PATH: &str = "/etc/soya-asn-router/soya.db";
+pub const LOCK_STALE_SECONDS: i64 = 2 * 60 * 60;
+pub const MAX_POLICY_GROUPS: u32 = 64;
+pub const MARK_BASE: u32 = 0x5100;
+pub const ROUTE_START_RETRIES: usize = 6;
+pub const ROUTE_START_RETRY_DELAY_SECONDS: u64 = 10;
+pub const ROUTE_TABLE_NAME: &str = "soya_asn_router";
+pub const ROUTES_NFT_PATH: &str = "/etc/soya-asn-router/routes.nft";
+pub const ROUTES_SH_PATH: &str = "/etc/soya-asn-router/routes.sh";
+pub const RULE_PREF_BASE: u32 = 19_000;
+pub const TABLE_ID_BASE: u32 = 5_100;

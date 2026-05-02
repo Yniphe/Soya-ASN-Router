@@ -1,0 +1,13 @@
+{
+	"admin/services/soya-asn-router": {
+		"title": "Soya ASN Router",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "soya-asn-router/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-soya-asn-router" ]
+		}
+	}
+}

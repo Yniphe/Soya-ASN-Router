@@ -1,0 +1,17 @@
+{
+	"luci-app-soya-asn-router": {
+		"description": "Grant access to Soya ASN Router",
+		"read": {
+			"uci": [ "soya-asn-router" ],
+			"ubus": {
+				"soya-asn-router": [ "status", "interfaces" ]
+			}
+		},
+		"write": {
+			"uci": [ "soya-asn-router" ],
+			"ubus": {
+				"soya-asn-router": [ "sync_missing", "sync_all", "apply_routes", "pause_routes", "resume_routes" ]
+			}
+		}
+	}
+}

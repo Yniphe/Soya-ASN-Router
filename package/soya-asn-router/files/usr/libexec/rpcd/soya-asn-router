@@ -1,0 +1,81 @@
+#!/bin/sh
+
+. /usr/share/libubox/jshn.sh
+
+status() {
+	/usr/bin/soya-asn-router status
+}
+
+interfaces() {
+	/usr/bin/soya-asn-router interfaces
+}
+
+apply_routes() {
+	/usr/bin/soya-asn-router apply-routes
+}
+
+pause_routes() {
+	/usr/bin/soya-asn-router pause-routes
+}
+
+resume_routes() {
+	/usr/bin/soya-asn-router resume-routes
+}
+
+start_sync() {
+	/usr/bin/soya-asn-router "$1" >/dev/null 2>&1 &
+
+	json_init
+	json_add_boolean started 1
+	json_dump
+}
+
+list_methods() {
+	json_init
+	json_add_object status
+	json_close_object
+	json_add_object interfaces
+	json_close_object
+	json_add_object sync_missing
+	json_close_object
+	json_add_object sync_all
+	json_close_object
+	json_add_object apply_routes
+	json_close_object
+	json_add_object pause_routes
+	json_close_object
+	json_add_object resume_routes
+	json_close_object
+	json_dump
+}
+
+case "$1" in
+	list)
+		list_methods
+		;;
+	call)
+		case "$2" in
+			status)
+				status
+				;;
+			interfaces)
+				interfaces
+				;;
+			sync_missing)
+				start_sync sync-missing
+				;;
+			sync_all)
+				start_sync sync-all
+				;;
+			apply_routes)
+				apply_routes
+				;;
+			pause_routes)
+				pause_routes
+				;;
+			resume_routes)
+				resume_routes
+				;;
+		esac
+		;;
+esac

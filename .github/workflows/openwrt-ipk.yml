@@ -1,0 +1,187 @@
+name: Build OpenWrt IPK
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional GitHub Release tag to upload assets to"
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BACKEND_PACKAGE: soya-asn-router
+  LUCI_PACKAGE: luci-app-soya-asn-router
+
+jobs:
+  build:
+    name: ${{ matrix.openwrt_release }} ${{ matrix.openwrt_target }}
+    runs-on: ubuntu-24.04
+    env:
+      RUST_TARGET: ${{ matrix.rust_target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openwrt_release: "24.10.4"
+            openwrt_target: mediatek/filogic
+            target_slug: mediatek-filogic
+            package_arch: aarch64_cortex-a53
+            rust_target: aarch64-unknown-linux-musl
+            sdk_url: https://downloads.openwrt.org/releases/24.10.4/targets/mediatek/filogic/openwrt-sdk-24.10.4-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: b9762b8e1c8e114b0e6a252b98e94e6e4a1d2496beb9f6044c26227a8d78dee0
+          - openwrt_release: "25.12.2"
+            openwrt_target: mediatek/filogic
+            target_slug: mediatek-filogic
+            package_arch: aarch64_cortex-a53
+            rust_target: aarch64-unknown-linux-musl
+            sdk_url: https://downloads.openwrt.org/releases/25.12.2/targets/mediatek/filogic/openwrt-sdk-25.12.2-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 56e60bb1bfac3eb379cbabc3fff126ac2b749b746b007268b27aba2df9d31a4f
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ca-certificates \
+            curl \
+            file \
+            gawk \
+            gettext \
+            git \
+            libncurses-dev \
+            python3 \
+            rsync \
+            unzip \
+            zstd
+
+      - name: Install Rust
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          if [ -f "$HOME/.cargo/env" ]; then
+            . "$HOME/.cargo/env"
+          fi
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$RUST_TARGET"
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cross
+            ~/.cargo/git
+            ~/.cargo/registry
+            package/soya-asn-router/src/target
+          key: cargo-${{ runner.os }}-${{ matrix.rust_target }}-${{ hashFiles('package/soya-asn-router/src/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ matrix.rust_target }}-
+
+      - name: Install cross
+        run: |
+          if ! command -v cross >/dev/null 2>&1; then
+            cargo install cross --locked
+          fi
+
+      - name: Build Rust backend
+        working-directory: package/soya-asn-router/src
+        run: |
+          cross build --release --locked --target "$RUST_TARGET"
+          mkdir -p "$RUNNER_TEMP/prebuilt"
+          cp "target/$RUST_TARGET/release/$BACKEND_PACKAGE" "$RUNNER_TEMP/prebuilt/$BACKEND_PACKAGE"
+          file "$RUNNER_TEMP/prebuilt/$BACKEND_PACKAGE"
+
+      - name: Download OpenWrt SDK
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk"
+          curl -fL "${{ matrix.sdk_url }}" -o "$RUNNER_TEMP/openwrt-sdk.tar.zst"
+          echo "${{ matrix.sdk_sha256 }}  $RUNNER_TEMP/openwrt-sdk.tar.zst" | sha256sum -c -
+          tar --zstd -xf "$RUNNER_TEMP/openwrt-sdk.tar.zst" \
+            -C "$RUNNER_TEMP/sdk" \
+            --strip-components=1
+
+      - name: Configure OpenWrt feed
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          echo "src-link soya $GITHUB_WORKSPACE" >> feeds.conf.default
+          ./scripts/feeds update packages luci soya
+          ./scripts/feeds install "$BACKEND_PACKAGE" "$LUCI_PACKAGE"
+          {
+            echo "CONFIG_PACKAGE_$BACKEND_PACKAGE=m"
+            echo "CONFIG_PACKAGE_$LUCI_PACKAGE=m"
+          } >> .config
+          make defconfig
+
+      - name: Build OpenWrt packages
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          make "package/feeds/soya/$BACKEND_PACKAGE/compile" -j"$(nproc)" V=s \
+            SOYA_ASN_ROUTER_PREBUILT="$RUNNER_TEMP/prebuilt/$BACKEND_PACKAGE"
+          make "package/feeds/soya/$LUCI_PACKAGE/compile" -j"$(nproc)" V=s
+
+      - name: Collect IPK files
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          sdk_id="openwrt-${{ matrix.openwrt_release }}-${{ matrix.target_slug }}"
+          out_dir="$GITHUB_WORKSPACE/dist/$sdk_id"
+          mkdir -p "$out_dir"
+
+          find "bin/packages/${{ matrix.package_arch }}/soya" \
+            -maxdepth 1 \
+            -type f \
+            -name "*.ipk" \
+            -print0 |
+            while IFS= read -r -d '' pkg; do
+              cp "$pkg" "$out_dir/$sdk_id-$(basename "$pkg")"
+            done
+
+          test -n "$(find "$out_dir" -type f -name '*.ipk' -print -quit)"
+          (cd "$out_dir" && sha256sum *.ipk > SHA256SUMS)
+          ls -lh "$out_dir"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-ipk-${{ matrix.openwrt_release }}-${{ matrix.target_slug }}
+          path: dist/openwrt-${{ matrix.openwrt_release }}-${{ matrix.target_slug }}/*
+          if-no-files-found: error
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ github.event.inputs.release_tag || '' }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            release_tag="$GITHUB_REF_NAME"
+          else
+            release_tag="$RELEASE_TAG_INPUT"
+          fi
+
+          if [ -z "$release_tag" ]; then
+            echo "No release tag requested; skipping GitHub Release upload."
+            exit 0
+          fi
+
+          gh release view "$release_tag" >/dev/null 2>&1 ||
+            gh release create "$release_tag" \
+              --title "$release_tag" \
+              --notes "OpenWrt IPK packages for $release_tag." ||
+            true
+
+          gh release upload "$release_tag" \
+            "dist/openwrt-${{ matrix.openwrt_release }}-${{ matrix.target_slug }}"/* \
+            --clobber
