@@ -42,7 +42,8 @@ From the OpenWrt tree, add this directory as a linked feed:
 
 ```sh
 echo "src-link soya /absolute/path/to/soya-openwrt" >> feeds.conf.default
-./scripts/feeds update packages luci soya
+sed -i -E 's#^src-git-full base https://git.openwrt.org/openwrt/openwrt.git#src-git base https://github.com/openwrt/openwrt.git#' feeds.conf.default
+./scripts/feeds update base packages luci soya
 ./scripts/feeds install soya-asn-router luci-app-soya-asn-router
 ```
 
@@ -76,7 +77,8 @@ Inside the extracted SDK/buildroot:
 
 ```sh
 echo "src-link soya /Users/ivanchikishev/air/soya-openwrt" >> feeds.conf.default
-./scripts/feeds update -a
+sed -i -E 's#^src-git-full base https://git.openwrt.org/openwrt/openwrt.git#src-git base https://github.com/openwrt/openwrt.git#' feeds.conf.default
+./scripts/feeds update base packages luci soya
 ./scripts/feeds install luci-base soya-asn-router luci-app-soya-asn-router
 ```
 
@@ -127,17 +129,17 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r5 -m "soya-asn-router v0.1.0-r5"
-git push origin v0.1.0-r5
+git tag -a v0.1.0-r6 -m "soya-asn-router v0.1.0-r6"
+git push origin v0.1.0-r6
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
 exist, the workflow creates it and uploads assets like:
 
 ```sh
-openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r5_aarch64_cortex-a53.ipk
+openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r6_aarch64_cortex-a53.ipk
 openwrt-24.10.4-mediatek-filogic-luci-app-soya-asn-router_*.ipk
-openwrt-25.12.2-mediatek-filogic-soya-asn-router_0.1.0-r5_aarch64_cortex-a53.ipk
+openwrt-25.12.2-mediatek-filogic-soya-asn-router_0.1.0-r6_aarch64_cortex-a53.ipk
 openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router_*.ipk
 SHA256SUMS
 ```
