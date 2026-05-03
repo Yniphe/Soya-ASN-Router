@@ -156,7 +156,8 @@ jobs:
         run: |
           make "package/feeds/soya/$BACKEND_PACKAGE/compile" V=s \
             SOYA_ASN_ROUTER_PREBUILT="$RUNNER_TEMP/prebuilt/$BACKEND_PACKAGE"
-          make "package/feeds/soya/$LUCI_PACKAGE/compile" V=s
+          make "package/feeds/soya/$LUCI_PACKAGE/compile" V=s \
+            SOYA_ASN_ROUTER_PREBUILT="$RUNNER_TEMP/prebuilt/$BACKEND_PACKAGE"
 
       - name: Collect IPK files
         working-directory: ${{ runner.temp }}/sdk

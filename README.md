@@ -55,7 +55,8 @@ building the backend package:
 ```sh
 make package/feeds/soya/soya-asn-router/compile V=s \
   SOYA_ASN_ROUTER_PREBUILT=/absolute/path/to/soya-asn-router
-make package/feeds/soya/luci-app-soya-asn-router/compile V=s
+make package/feeds/soya/luci-app-soya-asn-router/compile V=s \
+  SOYA_ASN_ROUTER_PREBUILT=/absolute/path/to/soya-asn-router
 ```
 
 If the OpenWrt Rust toolchain works in your buildroot, enable
@@ -90,7 +91,8 @@ echo 'CONFIG_PACKAGE_luci-app-soya-asn-router=m' >> .config
 make defconfig
 make package/feeds/soya/soya-asn-router/compile V=s \
   SOYA_ASN_ROUTER_PREBUILT=/absolute/path/to/soya-asn-router
-make package/feeds/soya/luci-app-soya-asn-router/compile V=s
+make package/feeds/soya/luci-app-soya-asn-router/compile V=s \
+  SOYA_ASN_ROUTER_PREBUILT=/absolute/path/to/soya-asn-router
 ```
 
 For packages embedded into a firmware image, use `=y` instead of `=m` and then
@@ -129,17 +131,17 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r6 -m "soya-asn-router v0.1.0-r6"
-git push origin v0.1.0-r6
+git tag -a v0.1.0-r7 -m "soya-asn-router v0.1.0-r7"
+git push origin v0.1.0-r7
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
 exist, the workflow creates it and uploads assets like:
 
 ```sh
-openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r6_aarch64_cortex-a53.ipk
+openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r7_aarch64_cortex-a53.ipk
 openwrt-24.10.4-mediatek-filogic-luci-app-soya-asn-router_*.ipk
-openwrt-25.12.2-mediatek-filogic-soya-asn-router_0.1.0-r6_aarch64_cortex-a53.ipk
+openwrt-25.12.2-mediatek-filogic-soya-asn-router_0.1.0-r7_aarch64_cortex-a53.ipk
 openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router_*.ipk
 SHA256SUMS
 ```
