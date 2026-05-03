@@ -131,18 +131,18 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r7 -m "soya-asn-router v0.1.0-r7"
-git push origin v0.1.0-r7
+git tag -a v0.1.0-r8 -m "soya-asn-router v0.1.0-r8"
+git push origin v0.1.0-r8
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
 exist, the workflow creates it and uploads assets like:
 
 ```sh
-openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r7_aarch64_cortex-a53.ipk
+openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r8_aarch64_cortex-a53.ipk
 openwrt-24.10.4-mediatek-filogic-luci-app-soya-asn-router_*.ipk
-openwrt-25.12.2-mediatek-filogic-soya-asn-router_0.1.0-r7_aarch64_cortex-a53.ipk
-openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router_*.ipk
+openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r8.apk
+openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-*.apk
 SHA256SUMS
 ```
 
@@ -158,7 +158,7 @@ OpenWrt `24.10.4` and `mediatek/filogic` should use only the
 
 Manual builds are available from GitHub:
 
-1. Open `Actions -> Build OpenWrt IPK`.
+1. Open `Actions -> Build OpenWrt Packages`.
 2. Run the workflow.
 3. Leave `release_tag` empty to keep only workflow artifacts.
 4. Set `release_tag` to upload the produced files to that GitHub Release.
@@ -179,7 +179,7 @@ The SDK URL and SHA256 should be taken from the matching directory under:
 https://downloads.openwrt.org/releases/<version>/targets/<target>/<subtarget>/
 ```
 
-Install release assets on a router with:
+Install `24.10.x` release assets on a router with:
 
 ```sh
 scp openwrt-24.10.4-mediatek-filogic-*.ipk root@192.168.1.1:/tmp/
@@ -187,6 +187,19 @@ ssh root@192.168.1.1
 opkg install \
   /tmp/openwrt-24.10.4-mediatek-filogic-soya-asn-router_*.ipk \
   /tmp/openwrt-24.10.4-mediatek-filogic-luci-app-soya-asn-router_*.ipk
+/etc/init.d/rpcd reload
+/etc/init.d/uhttpd reload
+/etc/init.d/soya-asn-router restart
+```
+
+Install `25.x` `.apk` release assets with:
+
+```sh
+scp openwrt-25.12.2-mediatek-filogic-*.apk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1
+apk add --allow-untrusted \
+  /tmp/openwrt-25.12.2-mediatek-filogic-soya-asn-router-*.apk \
+  /tmp/openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-*.apk
 /etc/init.d/rpcd reload
 /etc/init.d/uhttpd reload
 /etc/init.d/soya-asn-router restart

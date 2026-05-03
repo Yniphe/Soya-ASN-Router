@@ -1,4 +1,4 @@
-name: Build OpenWrt IPK
+name: Build OpenWrt Packages
 
 on:
   workflow_dispatch:
@@ -159,7 +159,7 @@ jobs:
           make "package/feeds/soya/$LUCI_PACKAGE/compile" V=s \
             SOYA_ASN_ROUTER_PREBUILT="$RUNNER_TEMP/prebuilt/$BACKEND_PACKAGE"
 
-      - name: Collect IPK files
+      - name: Collect package files
         working-directory: ${{ runner.temp }}/sdk
         run: |
           sdk_id="openwrt-${{ matrix.openwrt_release }}-${{ matrix.target_slug }}"
@@ -169,20 +169,27 @@ jobs:
           find "bin/packages/${{ matrix.package_arch }}/soya" \
             -maxdepth 1 \
             -type f \
-            -name "*.ipk" \
+            \( -name "*.ipk" -o -name "*.apk" \) \
             -print0 |
             while IFS= read -r -d '' pkg; do
               cp "$pkg" "$out_dir/$sdk_id-$(basename "$pkg")"
             done
 
-          test -n "$(find "$out_dir" -type f -name '*.ipk' -print -quit)"
-          (cd "$out_dir" && sha256sum *.ipk > SHA256SUMS)
+          (
+            cd "$out_dir"
+            mapfile -t packages < <(
+              find . -maxdepth 1 -type f \( -name "*.ipk" -o -name "*.apk" \) -printf "%P\n" |
+                sort
+            )
+            ((${#packages[@]}))
+            sha256sum "${packages[@]}" > SHA256SUMS
+          )
           ls -lh "$out_dir"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-ipk-${{ matrix.openwrt_release }}-${{ matrix.target_slug }}
+          name: openwrt-packages-${{ matrix.openwrt_release }}-${{ matrix.target_slug }}
           path: dist/openwrt-${{ matrix.openwrt_release }}-${{ matrix.target_slug }}/*
           if-no-files-found: error
 
@@ -205,7 +212,7 @@ jobs:
           gh release view "$release_tag" >/dev/null 2>&1 ||
             gh release create "$release_tag" \
               --title "$release_tag" \
-              --notes "OpenWrt IPK packages for $release_tag." ||
+              --notes "OpenWrt packages for $release_tag." ||
             true
 
           gh release upload "$release_tag" \
