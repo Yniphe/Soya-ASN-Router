@@ -10,8 +10,6 @@ var statusSummary = null;
 var pollRegistered = false;
 var latestStatus = null;
 var routeToggleButton = null;
-var importUrlOption = null;
-var importInterfaceOption = null;
 
 var callStatus = rpc.declare({
 	object: 'soya-asn-router',
@@ -141,15 +139,6 @@ function addInterfaceValues(option, interfaces) {
 	interfaces.forEach(function(item) {
 		option.value(item.name, interfaceLabel(item));
 	});
-}
-
-function makeTransientOption(option, defaultValue) {
-	option.cfgvalue = function() {
-		return defaultValue || '';
-	};
-	option.write = function() {};
-	option.remove = function() {};
-	return option;
 }
 
 function renderRows(data) {
@@ -289,23 +278,16 @@ function syncAfterConfigSave() {
 	}).catch(notifyError);
 }
 
-function importFromUrl(sectionId) {
-	sectionId = sectionId || 'main';
-
-	var url = importUrlOption ? importUrlOption.formvalue(sectionId) : '';
-	var iface = importInterfaceOption ? importInterfaceOption.formvalue(sectionId) : '';
-
+function importFromUrl(url, iface) {
 	url = (url || '').trim();
 	iface = (iface || '').trim();
 
 	if (!url) {
-		notifyError(new Error(_('Import URL is required.')));
-		return Promise.resolve();
+		return Promise.reject(new Error(_('Import URL is required.')));
 	}
 
 	if (!iface) {
-		notifyError(new Error(_('Target interface is required.')));
-		return Promise.resolve();
+		return Promise.reject(new Error(_('Target interface is required.')));
 	}
 
 	return callImportUrl(url, iface).then(function(result) {
@@ -328,7 +310,76 @@ function importFromUrl(sectionId) {
 		window.setTimeout(function() {
 			window.location.reload();
 		}, 900);
-	}).catch(notifyError);
+	});
+}
+
+function showImportModal(interfaces) {
+	var defaultInterface = latestStatus && latestStatus.default_target_interface
+		? latestStatus.default_target_interface
+		: 'wan';
+	var urlInput = E('input', {
+		'class': 'cbi-input-text',
+		'type': 'url',
+		'placeholder': 'https://example.com/asns.txt',
+		'style': 'width: 100%'
+	});
+	var interfaceSelect = E('select', { 'class': 'cbi-input-select' },
+		interfaces.map(function(item) {
+			var attrs = { 'value': item.name };
+
+			if (item.name === defaultInterface)
+				attrs.selected = 'selected';
+
+			return E('option', attrs, [ interfaceLabel(item) ]);
+		})
+	);
+	var importButton = E('button', {
+		'class': 'btn cbi-button cbi-button-action'
+	}, [ _('Import') ]);
+	var cancelButton = E('button', {
+		'class': 'btn cbi-button cbi-button-neutral'
+	}, [ _('Cancel') ]);
+
+	cancelButton.addEventListener('click', function(ev) {
+		ev.preventDefault();
+		ui.hideModal();
+	});
+
+	importButton.addEventListener('click', function(ev) {
+		ev.preventDefault();
+		importButton.disabled = true;
+
+		importFromUrl(urlInput.value, interfaceSelect.value).then(function() {
+			ui.hideModal();
+		}).catch(function(error) {
+			importButton.disabled = false;
+			notifyError(error);
+		});
+	});
+
+	ui.showModal(_('Import ASNs from URL'), [
+		E('div', { 'class': 'cbi-section' }, [
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, [ _('URL') ]),
+				E('div', { 'class': 'cbi-value-field' }, [ urlInput ])
+			]),
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, [ _('Target interface') ]),
+				E('div', { 'class': 'cbi-value-field' }, [ interfaceSelect ])
+			])
+		]),
+		E('div', { 'class': 'right' }, [
+			cancelButton,
+			' ',
+			importButton
+		])
+	]);
+
+	window.setTimeout(function() {
+		urlInput.focus();
+	}, 0);
+
+	return Promise.resolve();
 }
 
 function toggleRoutes() {
@@ -407,36 +458,11 @@ return view.extend({
 		o.placeholder = '/etc/soya-asn-router/soya.db';
 		o.rmempty = false;
 
-		importUrlOption = makeTransientOption(
-			s.option(form.Value, '_import_url', _('ASN import URL')),
-			''
-		);
-		importUrlOption.placeholder = 'https://example.com/asns.txt';
-		importUrlOption.rmempty = true;
-		importUrlOption.validate = function(_sectionId, value) {
-			if (value == null || value === '')
-				return true;
-
-			return /^https?:\/\/\S+$/i.test(value)
-				? true
-				: _('Use an HTTP or HTTPS URL.');
-		};
-
-		importInterfaceOption = makeTransientOption(
-			s.option(form.ListValue, '_import_interface', _('ASN import target interface')),
-			latestStatus && latestStatus.default_target_interface
-				? latestStatus.default_target_interface
-				: 'wan'
-		);
-		addInterfaceValues(importInterfaceOption, interfaces);
-		importInterfaceOption.default = latestStatus && latestStatus.default_target_interface
-			? latestStatus.default_target_interface
-			: 'wan';
-		importInterfaceOption.rmempty = false;
-
 		o = s.option(form.Button, '_import_asns', _('Import ASNs from URL'));
 		o.inputstyle = 'action';
-		o.onclick = importFromUrl;
+		o.onclick = function() {
+			return showImportModal(interfaces);
+		};
 
 		o = s.option(form.Button, '_sync_missing', _('Synchronize missing'));
 		o.inputstyle = 'action';
