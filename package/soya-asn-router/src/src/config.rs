@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 
 use crate::constants::DEFAULT_DB_PATH;
@@ -28,6 +28,24 @@ pub struct AsnConfig {
     pub asn: String,
     pub target_interface: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AsnDedupeResult {
+    pub kept: usize,
+    pub removed_duplicates: usize,
+    pub removed_invalid: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AsnImportResult {
+    pub imported: usize,
+    pub skipped_existing: usize,
+    pub skipped_duplicate: usize,
+    pub invalid: usize,
+    pub deduplicated: usize,
+    pub interface: String,
+    pub asns: Vec<String>,
 }
 
 impl Config {
@@ -110,54 +128,29 @@ impl Config {
     }
 }
 
-#[derive(Default)]
-struct UciAsnSection {
+#[derive(Default, Clone)]
+struct UciSection {
     section_type: Option<String>,
-    asn: Option<String>,
-    target_interface: Option<String>,
-    enabled: Option<String>,
+    options: BTreeMap<String, String>,
 }
 
 fn load_asn_sections(default_target_interface: &str) -> Vec<AsnConfig> {
-    let Some(output) = uci_show("soya-asn-router") else {
-        return Vec::new();
-    };
-
-    let mut sections = BTreeMap::<String, UciAsnSection>::new();
-
-    for line in output.lines() {
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let Some(rest) = key.strip_prefix("soya-asn-router.") else {
-            continue;
-        };
-        let value = decode_uci_value(value);
-
-        if let Some((section, option)) = rest.split_once('.') {
-            let entry = sections.entry(section.to_string()).or_default();
-            match option {
-                "asn" => entry.asn = Some(value),
-                "interface" => entry.target_interface = Some(value),
-                "enabled" => entry.enabled = Some(value),
-                _ => {}
-            }
-        } else {
-            sections.entry(rest.to_string()).or_default().section_type = Some(value);
-        }
-    }
+    let sections = uci_show("soya-asn-router")
+        .map(|output| parse_uci_sections("soya-asn-router", &output))
+        .unwrap_or_default();
 
     sections
-        .into_values()
+        .into_iter()
         .filter(|section| section.section_type.as_deref() == Some("asn"))
         .filter_map(|section| {
             Some(AsnConfig {
-                asn: normalize_asn(section.asn.as_deref()?)?,
+                asn: normalize_asn(section.options.get("asn")?)?,
                 target_interface: normalize_interface_value(
-                    section.target_interface.as_deref(),
+                    section.options.get("interface").map(String::as_str),
                     default_target_interface,
                 ),
-                enabled: parse_bool(section.enabled.as_deref()).unwrap_or(true),
+                enabled: parse_bool(section.options.get("enabled").map(String::as_str))
+                    .unwrap_or(true),
             })
         })
         .collect()
@@ -207,7 +200,7 @@ fn decode_uci_value(value: &str) -> String {
     value.to_string()
 }
 
-fn normalize_asn(value: &str) -> Option<String> {
+pub fn normalize_asn(value: &str) -> Option<String> {
     let value = value.trim().to_ascii_uppercase();
     let number = value.strip_prefix("AS").unwrap_or(&value);
 
@@ -221,6 +214,261 @@ fn normalize_asn(value: &str) -> Option<String> {
     }
 
     Some(format!("AS{number}"))
+}
+
+pub fn dedupe_asn_config() -> Result<AsnDedupeResult> {
+    let sections = read_committed_sections()?;
+    let mut seen = BTreeSet::<String>::new();
+    let mut kept = Vec::new();
+    let mut removed_duplicates = 0;
+    let mut removed_invalid = 0;
+
+    for mut section in asn_sections(sections) {
+        let Some(asn) = section
+            .options
+            .get("asn")
+            .and_then(|value| normalize_asn(value))
+        else {
+            removed_invalid += 1;
+            continue;
+        };
+
+        if !seen.insert(asn.clone()) {
+            removed_duplicates += 1;
+            continue;
+        }
+
+        let target_interface =
+            normalize_interface_value(section.options.get("interface").map(String::as_str), "wan");
+        section.options.insert("asn".to_string(), asn);
+        section
+            .options
+            .insert("interface".to_string(), target_interface);
+        section
+            .options
+            .entry("enabled".to_string())
+            .or_insert_with(|| "1".to_string());
+        kept.push(section);
+    }
+
+    if removed_duplicates > 0 || removed_invalid > 0 {
+        rewrite_asn_sections(&kept)?;
+    }
+
+    Ok(AsnDedupeResult {
+        kept: kept.len(),
+        removed_duplicates,
+        removed_invalid,
+    })
+}
+
+pub fn import_asns_from_text(text: &str, target_interface: &str) -> Result<AsnImportResult> {
+    let target_interface = normalize_interface_value(Some(target_interface), "");
+    if target_interface.is_empty() {
+        return Err(anyhow!("target interface is required"));
+    }
+
+    let mut seen_input = BTreeSet::<String>::new();
+    let mut parsed_asns = Vec::new();
+    let mut skipped_duplicate = 0;
+    let mut invalid = 0;
+
+    for token in text.split(|ch: char| ch == ',' || ch == ';' || ch.is_ascii_whitespace()) {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        match normalize_asn(token) {
+            Some(asn) if seen_input.insert(asn.clone()) => parsed_asns.push(asn),
+            Some(_) => skipped_duplicate += 1,
+            None => invalid += 1,
+        }
+    }
+
+    if parsed_asns.is_empty() {
+        return Err(anyhow!("import data does not contain valid ASN entries"));
+    }
+
+    let dedupe = dedupe_asn_config()?;
+    let mut sections = asn_sections(read_committed_sections()?);
+    let mut existing = BTreeSet::<String>::new();
+
+    for section in &sections {
+        if let Some(asn) = section
+            .options
+            .get("asn")
+            .and_then(|value| normalize_asn(value))
+        {
+            existing.insert(asn);
+        }
+    }
+
+    let mut imported_asns = Vec::new();
+    let mut skipped_existing = 0;
+
+    for asn in parsed_asns {
+        if !existing.insert(asn.clone()) {
+            skipped_existing += 1;
+            continue;
+        }
+
+        let mut options = BTreeMap::new();
+        options.insert("asn".to_string(), asn.clone());
+        options.insert("interface".to_string(), target_interface.clone());
+        options.insert("enabled".to_string(), "1".to_string());
+
+        sections.push(UciSection {
+            section_type: Some("asn".to_string()),
+            options,
+        });
+        imported_asns.push(asn);
+    }
+
+    if !imported_asns.is_empty() {
+        rewrite_asn_sections(&sections)?;
+    }
+
+    Ok(AsnImportResult {
+        imported: imported_asns.len(),
+        skipped_existing,
+        skipped_duplicate,
+        invalid,
+        deduplicated: dedupe.removed_duplicates + dedupe.removed_invalid,
+        interface: target_interface,
+        asns: imported_asns,
+    })
+}
+
+fn asn_sections(sections: Vec<UciSection>) -> Vec<UciSection> {
+    sections
+        .into_iter()
+        .filter(|section| section.section_type.as_deref() == Some("asn"))
+        .collect()
+}
+
+fn read_committed_sections() -> Result<Vec<UciSection>> {
+    let output = run_uci_output(
+        &["-q", "show", "soya-asn-router"],
+        "failed to read soya-asn-router UCI config",
+    )?;
+
+    Ok(parse_uci_sections("soya-asn-router", &output))
+}
+
+fn parse_uci_sections(package: &str, output: &str) -> Vec<UciSection> {
+    let prefix = format!("{package}.");
+    let mut sections = Vec::<UciSection>::new();
+    let mut indexes = BTreeMap::<String, usize>::new();
+
+    for line in output.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(rest) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+
+        let value = decode_uci_value(value);
+        let (section_name, option_name) = match rest.split_once('.') {
+            Some((section, option)) => (section, Some(option)),
+            None => (rest, None),
+        };
+        let index = if let Some(index) = indexes.get(section_name) {
+            *index
+        } else {
+            let index = sections.len();
+            indexes.insert(section_name.to_string(), index);
+            sections.push(UciSection::default());
+            index
+        };
+
+        if let Some(option_name) = option_name {
+            sections[index]
+                .options
+                .insert(option_name.to_string(), value);
+        } else {
+            sections[index].section_type = Some(value);
+        }
+    }
+
+    sections
+}
+
+fn rewrite_asn_sections(sections: &[UciSection]) -> Result<()> {
+    delete_all_asn_sections()?;
+
+    for section in sections {
+        let new_section = add_asn_section()?;
+
+        for (option, value) in &section.options {
+            set_uci_option(&new_section, option, value)?;
+        }
+    }
+
+    run_status_command(
+        Command::new("uci").args(["commit", "soya-asn-router"]),
+        "failed to commit soya-asn-router UCI config",
+    )
+}
+
+fn delete_all_asn_sections() -> Result<()> {
+    loop {
+        let status = Command::new("uci")
+            .args(["-q", "delete", "soya-asn-router.@asn[0]"])
+            .status()
+            .context("failed to delete ASN UCI section")?;
+
+        if !status.success() {
+            return Ok(());
+        }
+    }
+}
+
+fn add_asn_section() -> Result<String> {
+    let section = run_uci_output(
+        &["add", "soya-asn-router", "asn"],
+        "failed to add ASN UCI section",
+    )?
+    .trim()
+    .to_string();
+
+    if section.is_empty() {
+        return Err(anyhow!("uci add did not return a section name"));
+    }
+
+    Ok(section)
+}
+
+fn set_uci_option(section: &str, option: &str, value: &str) -> Result<()> {
+    let assignment = format!("soya-asn-router.{section}.{option}={value}");
+
+    run_status_command(
+        Command::new("uci").args(["set", &assignment]),
+        "failed to set ASN UCI option",
+    )
+}
+
+fn run_uci_output(args: &[&str], context: &str) -> Result<String> {
+    let output = Command::new("uci")
+        .args(args)
+        .output()
+        .with_context(|| context.to_string())?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(anyhow!(
+        "{}{}",
+        context,
+        if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr}")
+        }
+    ))
 }
 
 fn parse_bool(value: Option<&str>) -> Option<bool> {

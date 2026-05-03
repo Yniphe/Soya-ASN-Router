@@ -10,6 +10,8 @@ var statusSummary = null;
 var pollRegistered = false;
 var latestStatus = null;
 var routeToggleButton = null;
+var importUrlOption = null;
+var importInterfaceOption = null;
 
 var callStatus = rpc.declare({
 	object: 'soya-asn-router',
@@ -50,6 +52,19 @@ var callPauseRoutes = rpc.declare({
 var callResumeRoutes = rpc.declare({
 	object: 'soya-asn-router',
 	method: 'resume_routes',
+	expect: { '': {} }
+});
+
+var callDedupeConfig = rpc.declare({
+	object: 'soya-asn-router',
+	method: 'dedupe_config',
+	expect: { '': {} }
+});
+
+var callImportUrl = rpc.declare({
+	object: 'soya-asn-router',
+	method: 'import_url',
+	params: [ 'url', 'interface' ],
 	expect: { '': {} }
 });
 
@@ -126,6 +141,15 @@ function addInterfaceValues(option, interfaces) {
 	interfaces.forEach(function(item) {
 		option.value(item.name, interfaceLabel(item));
 	});
+}
+
+function makeTransientOption(option, defaultValue) {
+	option.cfgvalue = function() {
+		return defaultValue || '';
+	};
+	option.write = function() {};
+	option.remove = function() {};
+	return option;
 }
 
 function renderRows(data) {
@@ -230,9 +254,80 @@ function notifyError(error) {
 	]), 'error');
 }
 
+function notifyInfo(message) {
+	ui.addNotification(null, E('p', {}, [ message ]), 'info');
+}
+
 function runAction(call) {
 	return call().then(function() {
 		return updateStatus();
+	}).catch(notifyError);
+}
+
+function cleanupConfig() {
+	return callDedupeConfig().then(function(result) {
+		var removed = (result.removed_duplicates || 0) + (result.removed_invalid || 0);
+
+		if (removed > 0)
+			notifyInfo(_('Removed %d duplicate or invalid ASN row(s).').format(removed));
+
+		return result;
+	});
+}
+
+function syncAfterConfigSave() {
+	var removed = 0;
+
+	return cleanupConfig().then(function(result) {
+		removed = (result.removed_duplicates || 0) + (result.removed_invalid || 0);
+		return runAction(callSyncMissing);
+	}).then(function() {
+		if (removed > 0)
+			window.setTimeout(function() {
+				window.location.reload();
+			}, 700);
+	}).catch(notifyError);
+}
+
+function importFromUrl(sectionId) {
+	sectionId = sectionId || 'main';
+
+	var url = importUrlOption ? importUrlOption.formvalue(sectionId) : '';
+	var iface = importInterfaceOption ? importInterfaceOption.formvalue(sectionId) : '';
+
+	url = (url || '').trim();
+	iface = (iface || '').trim();
+
+	if (!url) {
+		notifyError(new Error(_('Import URL is required.')));
+		return Promise.resolve();
+	}
+
+	if (!iface) {
+		notifyError(new Error(_('Target interface is required.')));
+		return Promise.resolve();
+	}
+
+	return callImportUrl(url, iface).then(function(result) {
+		var skipped = (result.skipped_existing || 0) + (result.skipped_duplicate || 0);
+		var message = _('Imported %d ASN(s) to %s. Skipped %d existing or duplicate item(s).').format(
+			result.imported || 0,
+			result.interface || iface,
+			skipped
+		);
+
+		if (result.invalid)
+			message += ' ' + _('Ignored invalid item(s): %d.').format(result.invalid);
+
+		if (result.deduplicated)
+			message += ' ' + _('Cleaned existing duplicate row(s): %d.').format(result.deduplicated);
+
+		notifyInfo(message);
+		return updateStatus();
+	}).then(function() {
+		window.setTimeout(function() {
+			window.location.reload();
+		}, 900);
 	}).catch(notifyError);
 }
 
@@ -311,6 +406,37 @@ return view.extend({
 		o.default = '/etc/soya-asn-router/soya.db';
 		o.placeholder = '/etc/soya-asn-router/soya.db';
 		o.rmempty = false;
+
+		importUrlOption = makeTransientOption(
+			s.option(form.Value, '_import_url', _('ASN import URL')),
+			''
+		);
+		importUrlOption.placeholder = 'https://example.com/asns.txt';
+		importUrlOption.rmempty = true;
+		importUrlOption.validate = function(_sectionId, value) {
+			if (value == null || value === '')
+				return true;
+
+			return /^https?:\/\/\S+$/i.test(value)
+				? true
+				: _('Use an HTTP or HTTPS URL.');
+		};
+
+		importInterfaceOption = makeTransientOption(
+			s.option(form.ListValue, '_import_interface', _('ASN import target interface')),
+			latestStatus && latestStatus.default_target_interface
+				? latestStatus.default_target_interface
+				: 'wan'
+		);
+		addInterfaceValues(importInterfaceOption, interfaces);
+		importInterfaceOption.default = latestStatus && latestStatus.default_target_interface
+			? latestStatus.default_target_interface
+			: 'wan';
+		importInterfaceOption.rmempty = false;
+
+		o = s.option(form.Button, '_import_asns', _('Import ASNs from URL'));
+		o.inputstyle = 'action';
+		o.onclick = importFromUrl;
 
 		o = s.option(form.Button, '_sync_missing', _('Synchronize missing'));
 		o.inputstyle = 'action';
@@ -405,7 +531,7 @@ return view.extend({
 
 	handleSave: function(ev) {
 		return this.super('handleSave', [ ev ]).then(function() {
-			return runAction(callSyncMissing);
+			return syncAfterConfigSave();
 		});
 	},
 
@@ -413,7 +539,7 @@ return view.extend({
 		return this.super('handleSave', [ ev ]).then(function() {
 			return ui.changes.apply(mode == '0');
 		}).then(function() {
-			return runAction(callSyncMissing);
+			return syncAfterConfigSave();
 		});
 	}
 });

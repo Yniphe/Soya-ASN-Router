@@ -7,15 +7,17 @@ mod types;
 mod util;
 
 use std::env;
+use std::io::Read;
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
+use reqwest::Url;
 use rusqlite::{params, Connection};
 
-use crate::config::{set_route_policy_enabled, Config};
+use crate::config::{dedupe_asn_config, import_asns_from_text, set_route_policy_enabled, Config};
 use crate::constants::{ROUTE_START_RETRIES, ROUTE_START_RETRY_DELAY_SECONDS};
 use crate::db::{
     acquire_sync_lock, cleanup_stale_lock, ensure_asn_row, has_successful_sync, mark_asn_error,
@@ -29,6 +31,8 @@ use crate::policy::{
 use crate::ripe::{build_http_client, fetch_asn_provider, fetch_prefixes};
 use crate::types::{InterfaceChoice, InterfaceListResponse, ProxyStatus, StatusResponse};
 use crate::util::{now_rfc3339, truncate_error};
+
+const MAX_IMPORT_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 enum SyncMode {
@@ -56,7 +60,9 @@ fn main() -> ExitCode {
 }
 
 fn real_main() -> Result<()> {
-    match env::args().nth(1).as_deref() {
+    let mut args = env::args().skip(1);
+
+    match args.next().as_deref() {
         None | Some("daemon") => run_daemon(),
         Some("status") => print_status(),
         Some("sync-missing") => run_sync(SyncMode::Missing),
@@ -66,6 +72,16 @@ fn real_main() -> Result<()> {
         Some("pause-routes") => run_pause_routes(),
         Some("resume-routes") => run_resume_routes(),
         Some("interfaces") => print_interfaces(),
+        Some("dedupe-config") => run_dedupe_config(),
+        Some("import-url") => {
+            let url = args
+                .next()
+                .ok_or_else(|| anyhow!("import-url requires an HTTP or HTTPS URL"))?;
+            let target_interface = args
+                .next()
+                .ok_or_else(|| anyhow!("import-url requires a target interface"))?;
+            run_import_url(&url, &target_interface)
+        }
         Some("--help") | Some("-h") => {
             print_usage();
             Ok(())
@@ -76,7 +92,7 @@ fn real_main() -> Result<()> {
 
 fn print_usage() {
     println!(
-        "Usage: soya-asn-router [daemon|status|sync-missing|sync-all|apply-routes|generate-routes|pause-routes|resume-routes|interfaces]"
+        "Usage: soya-asn-router [daemon|status|sync-missing|sync-all|apply-routes|generate-routes|pause-routes|resume-routes|interfaces|dedupe-config|import-url URL INTERFACE]"
     );
 }
 
@@ -132,6 +148,48 @@ fn print_status() -> Result<()> {
     };
 
     serde_json::to_writer(std::io::stdout(), &response)?;
+    println!();
+    Ok(())
+}
+
+fn run_dedupe_config() -> Result<()> {
+    let result = dedupe_asn_config()?;
+
+    serde_json::to_writer(std::io::stdout(), &result)?;
+    println!();
+    Ok(())
+}
+
+fn run_import_url(url: &str, target_interface: &str) -> Result<()> {
+    let url = Url::parse(url).context("invalid import URL")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(anyhow!("import URL must use HTTP or HTTPS"));
+    }
+
+    let config = Config::load();
+    let client = build_http_client(&config)?;
+    let response = client
+        .get(url)
+        .send()
+        .context("failed to fetch ASN import URL")?
+        .error_for_status()
+        .context("ASN import URL returned HTTP error")?;
+
+    let mut body = String::new();
+    response
+        .take(MAX_IMPORT_BYTES + 1)
+        .read_to_string(&mut body)
+        .context("failed to read ASN import response")?;
+
+    if body.len() as u64 > MAX_IMPORT_BYTES {
+        return Err(anyhow!(
+            "ASN import response is too large; maximum is {} bytes",
+            MAX_IMPORT_BYTES
+        ));
+    }
+
+    let result = import_asns_from_text(&body, target_interface)?;
+    serde_json::to_writer(std::io::stdout(), &result)?;
     println!();
     Ok(())
 }

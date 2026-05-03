@@ -131,17 +131,17 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r8 -m "soya-asn-router v0.1.0-r8"
-git push origin v0.1.0-r8
+git tag -a v0.1.0-r9 -m "soya-asn-router v0.1.0-r9"
+git push origin v0.1.0-r9
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
 exist, the workflow creates it and uploads assets like:
 
 ```sh
-openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r8_aarch64_cortex-a53.ipk
+openwrt-24.10.4-mediatek-filogic-soya-asn-router_0.1.0-r9_aarch64_cortex-a53.ipk
 openwrt-24.10.4-mediatek-filogic-luci-app-soya-asn-router_*.ipk
-openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r8.apk
+openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r9.apk
 openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-*.apk
 SHA256SUMS
 ```
@@ -222,6 +222,8 @@ The LuCI page supports:
 
 - adding ASNs in `AS15169` or `15169` format;
 - selecting a target interface for each ASN;
+- importing comma- or whitespace-separated ASN lists from an HTTP/HTTPS URL;
+- removing duplicate ASN rows from UCI config by normalized ASN value;
 - displaying the ASN holder name reported by RIPEstat `as-overview`;
 - optional HTTP or SOCKS5 proxy configuration;
 - synchronizing only ASNs missing from the SQLite database;
@@ -243,4 +245,6 @@ soya-asn-router generate-routes
 soya-asn-router apply-routes
 soya-asn-router pause-routes
 soya-asn-router resume-routes
+soya-asn-router dedupe-config
+soya-asn-router import-url https://example.com/asns.txt wg0
 ```

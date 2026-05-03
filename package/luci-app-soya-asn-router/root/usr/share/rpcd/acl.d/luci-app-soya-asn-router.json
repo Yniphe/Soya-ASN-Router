@@ -10,7 +10,7 @@
 		"write": {
 			"uci": [ "soya-asn-router" ],
 			"ubus": {
-				"soya-asn-router": [ "sync_missing", "sync_all", "apply_routes", "pause_routes", "resume_routes" ]
+				"soya-asn-router": [ "sync_missing", "sync_all", "apply_routes", "pause_routes", "resume_routes", "dedupe_config", "import_url" ]
 			}
 		}
 	}

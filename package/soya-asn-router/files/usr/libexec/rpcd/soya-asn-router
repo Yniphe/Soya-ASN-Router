@@ -22,6 +22,22 @@ resume_routes() {
 	/usr/bin/soya-asn-router resume-routes
 }
 
+dedupe_config() {
+	/usr/bin/soya-asn-router dedupe-config
+}
+
+import_url() {
+	local input="$1"
+	local url interface
+
+	[ -n "$input" ] || read input
+	json_load "${input:-{}}"
+	json_get_var url url
+	json_get_var interface interface
+
+	/usr/bin/soya-asn-router import-url "$url" "$interface"
+}
+
 start_sync() {
 	/usr/bin/soya-asn-router "$1" >/dev/null 2>&1 &
 
@@ -45,6 +61,12 @@ list_methods() {
 	json_add_object pause_routes
 	json_close_object
 	json_add_object resume_routes
+	json_close_object
+	json_add_object dedupe_config
+	json_close_object
+	json_add_object import_url
+	json_add_string url "string"
+	json_add_string interface "string"
 	json_close_object
 	json_dump
 }
@@ -75,6 +97,12 @@ case "$1" in
 				;;
 			resume_routes)
 				resume_routes
+				;;
+			dedupe_config)
+				dedupe_config
+				;;
+			import_url)
+				import_url "$3"
 				;;
 		esac
 		;;
