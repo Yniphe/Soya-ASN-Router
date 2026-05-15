@@ -1,4 +1,9 @@
 pub const DEFAULT_DB_PATH: &str = "/etc/soya-asn-router/soya.db";
+pub const DEFAULT_GROUP_CHECK_INTERVAL_SECONDS: u64 = 60;
+pub const DEFAULT_GROUP_CHECK_TIMEOUT_SECONDS: u64 = 5;
+pub const DEFAULT_GROUP_CHECK_URL: &str = "https://www.google.com/generate_204";
+pub const DEFAULT_GROUP_FAILURE_THRESHOLD: u32 = 3;
+pub const DEFAULT_GROUP_RECOVERY_THRESHOLD: u32 = 2;
 pub const LOCK_STALE_SECONDS: i64 = 2 * 60 * 60;
 pub const MAX_POLICY_GROUPS: u32 = 64;
 pub const MARK_BASE: u32 = 0x5100;

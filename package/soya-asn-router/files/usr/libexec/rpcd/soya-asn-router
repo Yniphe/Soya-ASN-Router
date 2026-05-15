@@ -18,6 +18,10 @@ preview_routes() {
 	/usr/bin/soya-asn-router preview-routes
 }
 
+check_groups() {
+	/usr/bin/soya-asn-router check-groups
+}
+
 pause_routes() {
 	/usr/bin/soya-asn-router pause-routes
 }
@@ -87,6 +91,8 @@ list_methods() {
 	json_close_object
 	json_add_object preview_routes
 	json_close_object
+	json_add_object check_groups
+	json_close_object
 	json_add_object pause_routes
 	json_close_object
 	json_add_object resume_routes
@@ -130,6 +136,9 @@ case "$1" in
 				;;
 			preview_routes)
 				preview_routes
+				;;
+			check_groups)
+				check_groups
 				;;
 			pause_routes)
 				pause_routes

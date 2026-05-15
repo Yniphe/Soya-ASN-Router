@@ -7,6 +7,7 @@
 
 var statusBody = null;
 var statusSummary = null;
+var groupStatusBody = null;
 var pollRegistered = false;
 var latestStatus = null;
 var routeToggleButton = null;
@@ -52,6 +53,12 @@ var callApplyRoutes = rpc.declare({
 var callPreviewRoutes = rpc.declare({
 	object: 'soya-asn-router',
 	method: 'preview_routes',
+	expect: { '': {} }
+});
+
+var callCheckGroups = rpc.declare({
+	object: 'soya-asn-router',
+	method: 'check_groups',
 	expect: { '': {} }
 });
 
@@ -169,6 +176,46 @@ function addInterfaceValues(option, interfaces) {
 	});
 }
 
+function configuredGroups(data) {
+	return (data && data.interface_groups) || [];
+}
+
+function groupTargetValue(group) {
+	return 'group:' + group.id;
+}
+
+function groupLabel(group) {
+	var label = group.name || group.id;
+
+	if (group.active_interface)
+		label += ' (' + _('active') + ': ' + group.active_interface + ')';
+
+	return _('Group') + ': ' + label;
+}
+
+function addTargetValues(option, interfaces, groups) {
+	addInterfaceValues(option, interfaces);
+
+	(groups || []).forEach(function(group) {
+		if (!group || !group.id || group.enabled === false)
+			return;
+
+		option.value(groupTargetValue(group), groupLabel(group));
+	});
+}
+
+function targetText(target, data) {
+	var groupId;
+
+	if (!target || target.indexOf('group:') !== 0)
+		return formatValue(target);
+
+	groupId = target.substring(6);
+	return formatValue(configuredGroups(data).filter(function(group) {
+		return group.id === groupId;
+	}).map(groupLabel)[0] || target);
+}
+
 function selectedAsnList() {
 	return Object.keys(selectedAsns).sort();
 }
@@ -214,7 +261,7 @@ function registerActionWidget(key, widget) {
 function updateActionState(data) {
 	var busy = statusBusy(data);
 
-	[ 'sync_missing', 'sync_all', 'apply_routes', 'preview_routes', 'toggle_routes', 'import_asns' ].forEach(function(key) {
+	[ 'sync_missing', 'sync_all', 'check_groups', 'apply_routes', 'preview_routes', 'toggle_routes', 'import_asns' ].forEach(function(key) {
 		setDisabled(actionWidgets[key], busy);
 	});
 
@@ -306,7 +353,7 @@ function renderRows(data) {
 			E('td', { 'class': 'td' }, [ item.asn ]),
 			E('td', { 'class': 'td' }, [ formatValue(item.provider_name) ]),
 			E('td', { 'class': 'td' }, [ item.enabled ? _('yes') : _('no') ]),
-			E('td', { 'class': 'td' }, [ formatValue(item.target_interface) ]),
+			E('td', { 'class': 'td' }, [ targetText(item.target_interface, data) ]),
 			E('td', { 'class': 'td' }, [ stateText(item.state) ]),
 			E('td', { 'class': 'td' }, [ String(item.ipv4_count || 0) ]),
 			E('td', { 'class': 'td' }, [ String(item.ipv6_count || 0) ]),
@@ -355,6 +402,42 @@ function renderSummary(data) {
 	];
 }
 
+function renderGroupRows(data) {
+	var groups = configuredGroups(data);
+
+	if (groups.length === 0) {
+		return [
+			E('tr', { 'class': 'tr placeholder' }, [
+				E('td', { 'class': 'td', 'colspan': 8 }, [
+					E('em', {}, [ _('No interface groups configured.') ])
+				])
+			])
+		];
+	}
+
+	return groups.map(function(group) {
+		var members = (group.interfaces || []).map(function(item) {
+			var text = item.name + ': ' + (item.state || _('unknown'));
+
+			if (item.consecutive_failures)
+				text += ' / ' + _('failures') + ': ' + item.consecutive_failures;
+
+			return text;
+		}).join(', ');
+
+		return E('tr', { 'class': 'tr' }, [
+			E('td', { 'class': 'td' }, [ group.name || group.id ]),
+			E('td', { 'class': 'td' }, [ group.id ]),
+			E('td', { 'class': 'td' }, [ group.enabled ? _('yes') : _('no') ]),
+			E('td', { 'class': 'td' }, [ group.state || _('unknown') ]),
+			E('td', { 'class': 'td' }, [ formatValue(group.active_interface) ]),
+			E('td', { 'class': 'td' }, [ formatValue(group.check_url) ]),
+			E('td', { 'class': 'td' }, [ formatValue(group.last_checked_at) ]),
+			E('td', { 'class': 'td' }, [ formatValue(group.last_error || members) ])
+		]);
+	});
+}
+
 function routeToggleTitle(data) {
 	var policy = data && data.policy ? data.policy : {};
 
@@ -394,6 +477,8 @@ function applyStatus(data) {
 	latestStatus = data;
 	cleanupSelection(data);
 	statusBody.replaceChildren.apply(statusBody, renderRows(data));
+	if (groupStatusBody)
+		groupStatusBody.replaceChildren.apply(groupStatusBody, renderGroupRows(data));
 	statusSummary.replaceChildren.apply(statusSummary, renderSummary(data));
 	updateRouteToggleButton(data);
 	updateActionState(data);
@@ -546,13 +631,15 @@ function bulkSetInterfaceSelected() {
 	});
 }
 
-function renderBulkControls(interfaces) {
+function renderBulkControls(interfaces, groups) {
 	bulkSelectedCount = E('span', { 'class': 'cbi-value-description' }, [ _('0 selected') ]);
-	bulkInterfaceSelect = E('select', { 'class': 'cbi-input-select' },
-		interfaces.map(function(item) {
-			return E('option', { 'value': item.name }, [ interfaceLabel(item) ]);
-		})
-	);
+	bulkInterfaceSelect = E('select', { 'class': 'cbi-input-select' });
+	interfaces.forEach(function(item) {
+		bulkInterfaceSelect.appendChild(E('option', { 'value': item.name }, [ interfaceLabel(item) ]));
+	});
+	(groups || []).forEach(function(group) {
+		bulkInterfaceSelect.appendChild(E('option', { 'value': groupTargetValue(group) }, [ groupLabel(group) ]));
+	});
 	bulkSetInterfaceButton = E('button', {
 		'class': 'btn cbi-button cbi-button-action'
 	}, [ _('Set interface') ]);
@@ -588,7 +675,7 @@ function renderBulkControls(interfaces) {
 	]);
 }
 
-function showImportModal(interfaces) {
+function showImportModal(interfaces, groups) {
 	var defaultInterface = latestStatus && latestStatus.default_target_interface
 		? latestStatus.default_target_interface
 		: 'wan';
@@ -598,16 +685,21 @@ function showImportModal(interfaces) {
 		'placeholder': 'https://example.com/asns.txt',
 		'style': 'width: 100%'
 	});
-	var interfaceSelect = E('select', { 'class': 'cbi-input-select' },
-		interfaces.map(function(item) {
-			var attrs = { 'value': item.name };
+	var interfaceSelect = E('select', { 'class': 'cbi-input-select' });
 
-			if (item.name === defaultInterface)
-				attrs.selected = 'selected';
+	interfaces.forEach(function(item) {
+		var attrs = { 'value': item.name };
 
-			return E('option', attrs, [ interfaceLabel(item) ]);
-		})
-	);
+		if (item.name === defaultInterface)
+			attrs.selected = 'selected';
+
+		interfaceSelect.appendChild(E('option', attrs, [ interfaceLabel(item) ]));
+	});
+	(groups || []).forEach(function(group) {
+		interfaceSelect.appendChild(E('option', {
+			'value': groupTargetValue(group)
+		}, [ groupLabel(group) ]));
+	});
 	var importButton = E('button', {
 		'class': 'btn cbi-button cbi-button-action'
 	}, [ _('Import') ]);
@@ -769,6 +861,24 @@ function validatePositiveInteger(_sectionId, value) {
 		: _('Use a positive integer.');
 }
 
+function validateGroupId(_sectionId, value) {
+	if (value == null || value === '')
+		return _('Group ID is required.');
+
+	return /^[A-Za-z0-9_-]+$/.test(value)
+		? true
+		: _('Use letters, numbers, underscores, or dashes.');
+}
+
+function validateHttpUrl(_sectionId, value) {
+	if (value == null || value === '')
+		return true;
+
+	return /^https?:\/\/[^ ]+$/i.test(value)
+		? true
+		: _('Use an HTTP or HTTPS URL.');
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
@@ -782,6 +892,7 @@ return view.extend({
 		var interfaceResponse = data[0];
 		latestStatus = data[1];
 		var interfaces = normalizeInterfaces(interfaceResponse);
+		var groups = configuredGroups(latestStatus);
 
 		m = new form.Map('soya-asn-router', _('Soya ASN Router'));
 
@@ -851,7 +962,7 @@ return view.extend({
 			return registerActionWidget('import_asns', form.Button.prototype.renderWidget.call(this, sectionId, optionIndex, cfgvalue));
 		};
 		o.onclick = function() {
-			return showImportModal(interfaces);
+			return showImportModal(interfaces, groups);
 		};
 
 		o = s.option(form.Button, '_sync_missing', _('Synchronize missing'));
@@ -870,6 +981,15 @@ return view.extend({
 		};
 		o.onclick = function() {
 			return runAction(callSyncAll);
+		};
+
+		o = s.option(form.Button, '_check_groups', _('Check interface groups'));
+		o.inputstyle = 'action';
+		o.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+			return registerActionWidget('check_groups', form.Button.prototype.renderWidget.call(this, sectionId, optionIndex, cfgvalue));
+		};
+		o.onclick = function() {
+			return runAction(callCheckGroups);
 		};
 
 		o = s.option(form.Button, '_preview_routes', _('Preview route policies'));
@@ -899,6 +1019,72 @@ return view.extend({
 		};
 		o.onclick = toggleRoutes;
 
+		s = m.section(form.GridSection, 'interface_group', _('Interface groups'));
+		s.anonymous = true;
+		s.addremove = true;
+		s.sortable = true;
+
+		o = s.option(form.Flag, 'enabled', _('Enabled'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'id', _('Group ID'));
+		o.placeholder = 'vpn_main';
+		o.rmempty = false;
+		o.validate = validateGroupId;
+
+		o = s.option(form.Value, 'name', _('Name'));
+		o.placeholder = 'VPN Main';
+		o.rmempty = true;
+
+		o = s.option(form.DynamicList, 'interface', _('Interfaces'));
+		addInterfaceValues(o, interfaces);
+		o.rmempty = false;
+
+		o = s.option(form.Flag, 'check_enabled', _('Health checks'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'check_url', _('Health-check URL'));
+		o.default = 'https://www.google.com/generate_204';
+		o.placeholder = 'https://www.google.com/generate_204';
+		o.depends('check_enabled', '1');
+		o.rmempty = false;
+		o.validate = validateHttpUrl;
+
+		o = s.option(form.Value, 'check_interval_seconds', _('Check interval'));
+		o.default = '60';
+		o.placeholder = '60';
+		o.depends('check_enabled', '1');
+		o.rmempty = false;
+		o.validate = validatePositiveInteger;
+
+		o = s.option(form.Value, 'check_timeout_seconds', _('Check timeout'));
+		o.default = '5';
+		o.placeholder = '5';
+		o.depends('check_enabled', '1');
+		o.rmempty = false;
+		o.validate = validatePositiveInteger;
+
+		o = s.option(form.Value, 'failure_threshold', _('Failure threshold'));
+		o.default = '3';
+		o.placeholder = '3';
+		o.depends('check_enabled', '1');
+		o.rmempty = false;
+		o.validate = validatePositiveInteger;
+
+		o = s.option(form.Value, 'recovery_threshold', _('Recovery threshold'));
+		o.default = '2';
+		o.placeholder = '2';
+		o.depends('check_enabled', '1');
+		o.rmempty = false;
+		o.validate = validatePositiveInteger;
+
+		o = s.option(form.Flag, 'prefer_primary', _('Prefer primary interface'));
+		o.default = '1';
+		o.depends('check_enabled', '1');
+		o.rmempty = false;
+
 		s = m.section(form.GridSection, 'asn', _('ASNs'));
 		s.anonymous = true;
 		s.addremove = true;
@@ -914,7 +1100,7 @@ return view.extend({
 		o.validate = validateAsn;
 
 		o = s.option(form.ListValue, 'interface', _('Target interface'));
-		addInterfaceValues(o, interfaces);
+		addTargetValues(o, interfaces, groups);
 		o.default = 'wan';
 		o.rmempty = false;
 
@@ -930,6 +1116,13 @@ return view.extend({
 					])
 				])
 			]);
+			groupStatusBody = E('tbody', {}, [
+				E('tr', { 'class': 'tr placeholder' }, [
+					E('td', { 'class': 'td', 'colspan': 8 }, [
+						E('em', {}, [ _('Collecting data ...') ])
+					])
+				])
+			]);
 
 			statusSelectAll = E('input', { 'type': 'checkbox' });
 			statusSelectAll.addEventListener('change', function() {
@@ -939,7 +1132,23 @@ return view.extend({
 			var statusNode = E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, [ _('Synchronization status') ]),
 				statusSummary,
-				renderBulkControls(interfaces),
+				E('h4', {}, [ _('Interface group status') ]),
+				E('table', { 'class': 'table' }, [
+					E('thead', {}, [
+						E('tr', { 'class': 'tr table-titles' }, [
+							E('th', { 'class': 'th' }, [ _('Name') ]),
+							E('th', { 'class': 'th' }, [ _('ID') ]),
+							E('th', { 'class': 'th' }, [ _('Enabled') ]),
+							E('th', { 'class': 'th' }, [ _('State') ]),
+							E('th', { 'class': 'th' }, [ _('Active') ]),
+							E('th', { 'class': 'th' }, [ _('Health-check URL') ]),
+							E('th', { 'class': 'th' }, [ _('Last checked') ]),
+							E('th', { 'class': 'th' }, [ _('Details') ])
+						])
+					]),
+					groupStatusBody
+				]),
+				renderBulkControls(interfaces, groups),
 				E('table', { 'class': 'table' }, [
 					E('thead', {}, [
 						E('tr', { 'class': 'tr table-titles' }, [

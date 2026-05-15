@@ -6,13 +6,17 @@ use std::process::Command;
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 
-use crate::constants::DEFAULT_DB_PATH;
+use crate::constants::{
+    DEFAULT_DB_PATH, DEFAULT_GROUP_CHECK_INTERVAL_SECONDS, DEFAULT_GROUP_CHECK_TIMEOUT_SECONDS,
+    DEFAULT_GROUP_CHECK_URL, DEFAULT_GROUP_FAILURE_THRESHOLD, DEFAULT_GROUP_RECOVERY_THRESHOLD,
+};
 use crate::util::run_status_command;
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub enabled: bool,
     pub asns: Vec<AsnConfig>,
+    pub interface_groups: Vec<InterfaceGroupConfig>,
     pub lan_interface: String,
     pub default_target_interface: String,
     pub auto_apply_routes: bool,
@@ -31,6 +35,27 @@ pub struct AsnConfig {
     pub asn: String,
     pub target_interface: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InterfaceGroupConfig {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub interfaces: Vec<String>,
+    pub check_enabled: bool,
+    pub check_url: String,
+    pub check_interval_seconds: u64,
+    pub check_timeout_seconds: u64,
+    pub failure_threshold: u32,
+    pub recovery_threshold: u32,
+    pub prefer_primary: bool,
+}
+
+impl InterfaceGroupConfig {
+    pub fn primary_interface(&self) -> Option<&str> {
+        self.interfaces.first().map(String::as_str)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -91,7 +116,11 @@ impl Config {
             .or_else(|| parse_bool(uci_get("soya-asn-router.main.route_policy_enabled").as_deref()))
             .unwrap_or(true);
 
-        let mut asns = load_asn_sections(&default_target_interface);
+        let sections = uci_show("soya-asn-router")
+            .map(|output| parse_uci_sections("soya-asn-router", &output))
+            .unwrap_or_default();
+        let mut asns = load_asn_sections(&sections, &default_target_interface);
+        let interface_groups = load_interface_group_sections(&sections);
 
         if asns.is_empty() {
             asns = uci_get("soya-asn-router.main.asn")
@@ -138,6 +167,7 @@ impl Config {
         Self {
             enabled,
             asns,
+            interface_groups,
             lan_interface,
             default_target_interface,
             auto_apply_routes,
@@ -155,21 +185,32 @@ impl Config {
     pub fn active_asns(&self) -> Vec<&AsnConfig> {
         self.asns.iter().filter(|asn| asn.enabled).collect()
     }
+
+    pub fn active_interface_groups(&self) -> Vec<&InterfaceGroupConfig> {
+        self.interface_groups
+            .iter()
+            .filter(|group| group.enabled && !group.interfaces.is_empty())
+            .collect()
+    }
+
+    pub fn find_interface_group(&self, id: &str) -> Option<&InterfaceGroupConfig> {
+        self.interface_groups
+            .iter()
+            .find(|group| group.id == id && group.enabled)
+    }
 }
 
 #[derive(Default, Clone)]
 struct UciSection {
+    name: String,
     section_type: Option<String>,
     options: BTreeMap<String, String>,
+    lists: BTreeMap<String, Vec<String>>,
 }
 
-fn load_asn_sections(default_target_interface: &str) -> Vec<AsnConfig> {
-    let sections = uci_show("soya-asn-router")
-        .map(|output| parse_uci_sections("soya-asn-router", &output))
-        .unwrap_or_default();
-
+fn load_asn_sections(sections: &[UciSection], default_target_interface: &str) -> Vec<AsnConfig> {
     sections
-        .into_iter()
+        .iter()
         .filter(|section| section.section_type.as_deref() == Some("asn"))
         .filter_map(|section| {
             Some(AsnConfig {
@@ -180,6 +221,95 @@ fn load_asn_sections(default_target_interface: &str) -> Vec<AsnConfig> {
                 ),
                 enabled: parse_bool(section.options.get("enabled").map(String::as_str))
                     .unwrap_or(true),
+            })
+        })
+        .collect()
+}
+
+fn load_interface_group_sections(sections: &[UciSection]) -> Vec<InterfaceGroupConfig> {
+    sections
+        .iter()
+        .filter(|section| section.section_type.as_deref() == Some("interface_group"))
+        .filter_map(|section| {
+            let id = normalize_group_id(
+                section
+                    .options
+                    .get("id")
+                    .map(String::as_str)
+                    .unwrap_or(&section.name),
+            )?;
+            let name = section
+                .options
+                .get("name")
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| id.clone());
+            let mut interfaces = section
+                .lists
+                .get("interface")
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|value| {
+                    value
+                        .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
+                        .map(|item| normalize_interface_value(Some(item), ""))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>();
+
+            if interfaces.is_empty() {
+                interfaces = section
+                    .options
+                    .get("interface")
+                    .map(|value| {
+                        value
+                            .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
+                            .map(|item| normalize_interface_value(Some(item), ""))
+                            .filter(|item| !item.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+            }
+
+            let mut seen_interfaces = BTreeSet::new();
+            interfaces.retain(|interface| seen_interfaces.insert(interface.clone()));
+
+            Some(InterfaceGroupConfig {
+                id,
+                name,
+                enabled: parse_bool(section.options.get("enabled").map(String::as_str))
+                    .unwrap_or(true),
+                interfaces,
+                check_enabled: parse_bool(section.options.get("check_enabled").map(String::as_str))
+                    .unwrap_or(true),
+                check_url: section
+                    .options
+                    .get("check_url")
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| DEFAULT_GROUP_CHECK_URL.to_string()),
+                check_interval_seconds: parse_u64_option(
+                    section.options.get("check_interval_seconds"),
+                    DEFAULT_GROUP_CHECK_INTERVAL_SECONDS,
+                ),
+                check_timeout_seconds: parse_u64_option(
+                    section.options.get("check_timeout_seconds"),
+                    DEFAULT_GROUP_CHECK_TIMEOUT_SECONDS,
+                ),
+                failure_threshold: parse_u32_option(
+                    section.options.get("failure_threshold"),
+                    DEFAULT_GROUP_FAILURE_THRESHOLD,
+                ),
+                recovery_threshold: parse_u32_option(
+                    section.options.get("recovery_threshold"),
+                    DEFAULT_GROUP_RECOVERY_THRESHOLD,
+                ),
+                prefer_primary: parse_bool(
+                    section.options.get("prefer_primary").map(String::as_str),
+                )
+                .unwrap_or(true),
             })
         })
         .collect()
@@ -211,6 +341,28 @@ fn normalize_interface_value(value: Option<&str>, fallback: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+pub fn normalize_group_id(value: &str) -> Option<String> {
+    let value = value.trim();
+
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return None;
+    }
+
+    Some(value.to_string())
+}
+
+pub fn group_id_from_target(target: &str) -> Option<&str> {
+    target
+        .trim()
+        .strip_prefix("group:")
+        .map(str::trim)
+        .filter(|group_id| !group_id.is_empty())
 }
 
 fn decode_uci_value(value: &str) -> String {
@@ -348,8 +500,10 @@ pub fn import_asns_from_text(text: &str, target_interface: &str) -> Result<AsnIm
         options.insert("enabled".to_string(), "1".to_string());
 
         sections.push(UciSection {
+            name: String::new(),
             section_type: Some("asn".to_string()),
             options,
+            lists: BTreeMap::new(),
         });
         imported_asns.push(asn);
     }
@@ -491,11 +645,19 @@ fn parse_uci_sections(package: &str, output: &str) -> Vec<UciSection> {
         } else {
             let index = sections.len();
             indexes.insert(section_name.to_string(), index);
-            sections.push(UciSection::default());
+            sections.push(UciSection {
+                name: section_name.to_string(),
+                ..UciSection::default()
+            });
             index
         };
 
         if let Some(option_name) = option_name {
+            sections[index]
+                .lists
+                .entry(option_name.to_string())
+                .or_default()
+                .push(value.clone());
             sections[index]
                 .options
                 .insert(option_name.to_string(), value);
@@ -604,6 +766,20 @@ fn parse_interval_minutes(value: Option<String>) -> u64 {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(1440)
+}
+
+fn parse_u64_option(value: Option<&String>, default: u64) -> u64 {
+    value
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn parse_u32_option(value: Option<&String>, default: u32) -> u32 {
+    value
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 fn uci_get(path: &str) -> Option<String> {

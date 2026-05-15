@@ -6,9 +6,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::config::AsnConfig;
+use crate::config::{AsnConfig, InterfaceGroupConfig};
 use crate::constants::{LOCK_STALE_SECONDS, ROUTES_NFT_PATH, ROUTES_SH_PATH};
-use crate::types::{AsnStatus, PolicyStatus, SyncStatus};
+use crate::types::{
+    AsnStatus, InterfaceGroupStatus, InterfaceHealthStatus, PolicyStatus, SyncStatus,
+};
 use crate::util::{now_rfc3339, now_unix};
 
 pub fn open_database(path: &Path) -> Result<Connection> {
@@ -66,6 +68,29 @@ fn migrate_database(conn: &Connection) -> Result<()> {
             interface_count INTEGER NOT NULL DEFAULT 0,
             ipv4_prefix_count INTEGER NOT NULL DEFAULT 0,
             last_error TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS interface_group_state (
+            group_id TEXT PRIMARY KEY,
+            active_interface TEXT,
+            state TEXT NOT NULL DEFAULT 'unknown',
+            updated_at TEXT NOT NULL,
+            switched_at TEXT,
+            last_checked_at TEXT,
+            last_error TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS interface_health (
+            group_id TEXT NOT NULL,
+            interface TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'unknown',
+            consecutive_successes INTEGER NOT NULL DEFAULT 0,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_checked_at TEXT,
+            last_ok_at TEXT,
+            last_error TEXT,
+            latency_ms INTEGER,
+            PRIMARY KEY (group_id, interface)
         );
         ",
     )?;
@@ -225,6 +250,259 @@ pub fn read_configured_asn_status(conn: &Connection, asns: &[AsnConfig]) -> Resu
     }
 
     Ok(result)
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceHealthRow {
+    pub interface: String,
+    pub state: String,
+    pub consecutive_successes: i64,
+    pub consecutive_failures: i64,
+    pub last_checked_at: Option<String>,
+    pub last_ok_at: Option<String>,
+    pub last_error: Option<String>,
+    pub latency_ms: Option<i64>,
+}
+
+pub fn ensure_interface_group_state(conn: &Connection, group: &InterfaceGroupConfig) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO interface_group_state(
+            group_id, active_interface, state, updated_at
+         )
+         VALUES(?1, ?2, 'unknown', ?3)",
+        params![group.id, group.primary_interface(), now_rfc3339()],
+    )?;
+    Ok(())
+}
+
+pub fn read_group_active_interface(
+    conn: &Connection,
+    group: &InterfaceGroupConfig,
+) -> Result<Option<String>> {
+    ensure_interface_group_state(conn, group)?;
+
+    let active = conn
+        .query_row(
+            "SELECT active_interface FROM interface_group_state WHERE group_id = ?1",
+            params![group.id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .filter(|interface| group.interfaces.iter().any(|item| item == interface));
+
+    Ok(active.or_else(|| group.primary_interface().map(ToOwned::to_owned)))
+}
+
+pub fn write_group_state(
+    conn: &Connection,
+    group_id: &str,
+    active_interface: Option<&str>,
+    state: &str,
+    switched: bool,
+    last_error: Option<&str>,
+) -> Result<()> {
+    let now = now_rfc3339();
+    conn.execute(
+        "INSERT INTO interface_group_state(
+            group_id, active_interface, state, updated_at, switched_at, last_checked_at, last_error
+         )
+         VALUES(?1, ?2, ?3, ?4, CASE WHEN ?5 THEN ?4 ELSE NULL END, ?4, ?6)
+         ON CONFLICT(group_id) DO UPDATE SET
+            active_interface = excluded.active_interface,
+            state = excluded.state,
+            updated_at = excluded.updated_at,
+            switched_at = CASE
+                WHEN ?5 THEN excluded.updated_at
+                ELSE interface_group_state.switched_at
+            END,
+            last_checked_at = excluded.last_checked_at,
+            last_error = excluded.last_error",
+        params![group_id, active_interface, state, now, switched, last_error],
+    )?;
+    Ok(())
+}
+
+pub fn write_interface_health(
+    conn: &Connection,
+    group_id: &str,
+    interface: &str,
+    ok: bool,
+    latency_ms: Option<i64>,
+    error: Option<&str>,
+) -> Result<InterfaceHealthRow> {
+    let previous = read_interface_health(conn, group_id, interface)?;
+    let successes = if ok {
+        previous
+            .as_ref()
+            .map(|row| row.consecutive_successes + 1)
+            .unwrap_or(1)
+    } else {
+        0
+    };
+    let failures = if ok {
+        0
+    } else {
+        previous
+            .as_ref()
+            .map(|row| row.consecutive_failures + 1)
+            .unwrap_or(1)
+    };
+    let state = if ok { "healthy" } else { "unhealthy" };
+    let now = now_rfc3339();
+
+    conn.execute(
+        "INSERT INTO interface_health(
+            group_id, interface, state, consecutive_successes, consecutive_failures,
+            last_checked_at, last_ok_at, last_error, latency_ms
+         )
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, CASE WHEN ?7 THEN ?6 ELSE NULL END, ?8, ?9)
+         ON CONFLICT(group_id, interface) DO UPDATE SET
+            state = excluded.state,
+            consecutive_successes = excluded.consecutive_successes,
+            consecutive_failures = excluded.consecutive_failures,
+            last_checked_at = excluded.last_checked_at,
+            last_ok_at = CASE
+                WHEN ?7 THEN excluded.last_ok_at
+                ELSE interface_health.last_ok_at
+            END,
+            last_error = excluded.last_error,
+            latency_ms = excluded.latency_ms",
+        params![group_id, interface, state, successes, failures, now, ok, error, latency_ms],
+    )?;
+
+    Ok(InterfaceHealthRow {
+        interface: interface.to_string(),
+        state: state.to_string(),
+        consecutive_successes: successes,
+        consecutive_failures: failures,
+        last_checked_at: Some(now.clone()),
+        last_ok_at: if ok {
+            Some(now)
+        } else {
+            previous.and_then(|row| row.last_ok_at)
+        },
+        last_error: error.map(ToOwned::to_owned),
+        latency_ms,
+    })
+}
+
+pub fn read_interface_health(
+    conn: &Connection,
+    group_id: &str,
+    interface: &str,
+) -> Result<Option<InterfaceHealthRow>> {
+    conn.query_row(
+        "SELECT interface, state, consecutive_successes, consecutive_failures,
+                last_checked_at, last_ok_at, last_error, latency_ms
+         FROM interface_health
+         WHERE group_id = ?1 AND interface = ?2",
+        params![group_id, interface],
+        read_health_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn read_interface_group_statuses(
+    conn: &Connection,
+    groups: &[InterfaceGroupConfig],
+) -> Result<Vec<InterfaceGroupStatus>> {
+    let mut result = Vec::with_capacity(groups.len());
+
+    for group in groups {
+        ensure_interface_group_state(conn, group)?;
+        let state = conn
+            .query_row(
+                "SELECT active_interface, state, switched_at, last_checked_at, last_error
+                 FROM interface_group_state
+                 WHERE group_id = ?1",
+                params![group.id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let (active_interface, state, switched_at, last_checked_at, last_error) = state
+            .unwrap_or_else(|| {
+                (
+                    group.primary_interface().map(ToOwned::to_owned),
+                    "unknown".to_string(),
+                    None,
+                    None,
+                    None,
+                )
+            });
+        let mut interfaces = Vec::with_capacity(group.interfaces.len());
+
+        for interface in &group.interfaces {
+            let health = read_interface_health(conn, &group.id, interface)?;
+            interfaces.push(match health {
+                Some(row) => InterfaceHealthStatus {
+                    name: row.interface,
+                    state: row.state,
+                    consecutive_successes: row.consecutive_successes,
+                    consecutive_failures: row.consecutive_failures,
+                    last_checked_at: row.last_checked_at,
+                    last_ok_at: row.last_ok_at,
+                    last_error: row.last_error,
+                    latency_ms: row.latency_ms,
+                },
+                None => InterfaceHealthStatus {
+                    name: interface.clone(),
+                    state: "unknown".to_string(),
+                    consecutive_successes: 0,
+                    consecutive_failures: 0,
+                    last_checked_at: None,
+                    last_ok_at: None,
+                    last_error: None,
+                    latency_ms: None,
+                },
+            });
+        }
+
+        result.push(InterfaceGroupStatus {
+            id: group.id.clone(),
+            name: group.name.clone(),
+            enabled: group.enabled,
+            check_enabled: group.check_enabled,
+            check_url: group.check_url.clone(),
+            check_interval_seconds: group.check_interval_seconds,
+            check_timeout_seconds: group.check_timeout_seconds,
+            failure_threshold: group.failure_threshold,
+            recovery_threshold: group.recovery_threshold,
+            prefer_primary: group.prefer_primary,
+            primary_interface: group.primary_interface().map(ToOwned::to_owned),
+            active_interface,
+            state,
+            switched_at,
+            last_checked_at,
+            last_error,
+            interfaces,
+        });
+    }
+
+    Ok(result)
+}
+
+fn read_health_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InterfaceHealthRow> {
+    Ok(InterfaceHealthRow {
+        interface: row.get(0)?,
+        state: row.get(1)?,
+        consecutive_successes: row.get(2)?,
+        consecutive_failures: row.get(3)?,
+        last_checked_at: row.get(4)?,
+        last_ok_at: row.get(5)?,
+        last_error: row.get(6)?,
+        latency_ms: row.get(7)?,
+    })
 }
 
 pub fn acquire_sync_lock(conn: &Connection, mode: &str) -> Result<bool> {

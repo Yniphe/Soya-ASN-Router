@@ -8,12 +8,12 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::config::{group_id_from_target, Config};
 use crate::constants::{
     MARK_BASE, MAX_POLICY_GROUPS, ROUTES_NFT_PATH, ROUTES_SH_PATH, ROUTE_TABLE_NAME,
     RULE_PREF_BASE, TABLE_ID_BASE,
 };
-use crate::db::{read_ipv4_prefixes, write_policy_state};
+use crate::db::{read_group_active_interface, read_ipv4_prefixes, write_policy_state};
 use crate::util::truncate_error;
 
 #[derive(Debug)]
@@ -212,11 +212,11 @@ fn build_policy_plan(conn: &Connection, config: &Config) -> Result<PolicyPlan> {
     let mut asn_counts: BTreeMap<String, i64> = BTreeMap::new();
 
     for asn in config.active_asns() {
-        *asn_counts.entry(asn.target_interface.clone()).or_default() += 1;
+        let target_interface = resolve_target_interface(conn, config, &asn.target_interface)?;
 
-        let entry = prefix_groups
-            .entry(asn.target_interface.clone())
-            .or_default();
+        *asn_counts.entry(target_interface.clone()).or_default() += 1;
+
+        let entry = prefix_groups.entry(target_interface).or_default();
 
         for prefix in read_ipv4_prefixes(conn, &asn.asn)? {
             entry.insert(prefix);
@@ -258,6 +258,19 @@ fn build_policy_plan(conn: &Connection, config: &Config) -> Result<PolicyPlan> {
     }
 
     Ok(PolicyPlan { lan_device, groups })
+}
+
+fn resolve_target_interface(conn: &Connection, config: &Config, target: &str) -> Result<String> {
+    let Some(group_id) = group_id_from_target(target) else {
+        return Ok(target.to_string());
+    };
+    let group = config
+        .find_interface_group(group_id)
+        .with_context(|| format!("interface group '{group_id}' was not found"))?;
+
+    read_group_active_interface(conn, group)?
+        .or_else(|| group.primary_interface().map(ToOwned::to_owned))
+        .with_context(|| format!("interface group '{group_id}' has no active interface"))
 }
 
 fn count_prefixes(groups: &[PolicyGroup]) -> i64 {

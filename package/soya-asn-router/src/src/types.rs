@@ -10,6 +10,7 @@ pub struct StatusResponse {
     pub proxy: ProxyStatus,
     pub sync: SyncStatus,
     pub policy: PolicyStatus,
+    pub interface_groups: Vec<InterfaceGroupStatus>,
     pub asns: Vec<AsnStatus>,
 }
 
@@ -62,6 +63,39 @@ pub struct AsnStatus {
     pub last_synced_at: Option<String>,
     pub sync_started_at: Option<String>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InterfaceGroupStatus {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub check_enabled: bool,
+    pub check_url: String,
+    pub check_interval_seconds: u64,
+    pub check_timeout_seconds: u64,
+    pub failure_threshold: u32,
+    pub recovery_threshold: u32,
+    pub prefer_primary: bool,
+    pub primary_interface: Option<String>,
+    pub active_interface: Option<String>,
+    pub state: String,
+    pub switched_at: Option<String>,
+    pub last_checked_at: Option<String>,
+    pub last_error: Option<String>,
+    pub interfaces: Vec<InterfaceHealthStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InterfaceHealthStatus {
+    pub name: String,
+    pub state: String,
+    pub consecutive_successes: i64,
+    pub consecutive_failures: i64,
+    pub last_checked_at: Option<String>,
+    pub last_ok_at: Option<String>,
+    pub last_error: Option<String>,
+    pub latency_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

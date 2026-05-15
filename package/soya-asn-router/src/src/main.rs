@@ -1,6 +1,7 @@
 mod config;
 mod constants;
 mod db;
+mod health;
 mod policy;
 mod ripe;
 mod types;
@@ -24,9 +25,10 @@ use crate::config::{
 use crate::constants::{ROUTE_START_RETRIES, ROUTE_START_RETRY_DELAY_SECONDS};
 use crate::db::{
     acquire_sync_lock, cleanup_stale_lock, ensure_asn_row, has_successful_sync, mark_asn_error,
-    open_database, read_configured_asn_status, read_policy_status, read_sync_status,
-    release_sync_lock, save_prefixes, update_sync_progress, write_policy_state,
+    open_database, read_configured_asn_status, read_interface_group_statuses, read_policy_status,
+    read_sync_status, release_sync_lock, save_prefixes, update_sync_progress, write_policy_state,
 };
+use crate::health::{check_interface_groups, HealthCheckScheduler};
 use crate::policy::{
     apply_routes, disable_routes, discover_interfaces, generate_route_files, preview_routes,
     reconcile_route_policy,
@@ -80,6 +82,7 @@ fn real_main() -> Result<()> {
         Some("sync-missing") => run_sync(SyncMode::Missing),
         Some("sync-all") => run_sync(SyncMode::All),
         Some("preview-routes") => run_preview_routes(),
+        Some("check-groups") => run_check_groups(),
         Some("apply-routes") => run_apply_routes(true),
         Some("generate-routes") => run_apply_routes(false),
         Some("pause-routes") => run_pause_routes(),
@@ -120,7 +123,7 @@ fn real_main() -> Result<()> {
 
 fn print_usage() {
     println!(
-        "Usage: soya-asn-router [daemon|status|sync-missing|sync-all|preview-routes|apply-routes|generate-routes|pause-routes|resume-routes|interfaces|dedupe-config|import-url URL INTERFACE|bulk-delete ASNS|bulk-set-interface ASNS INTERFACE]"
+        "Usage: soya-asn-router [daemon|status|sync-missing|sync-all|preview-routes|check-groups|apply-routes|generate-routes|pause-routes|resume-routes|interfaces|dedupe-config|import-url URL INTERFACE|bulk-delete ASNS|bulk-set-interface ASNS INTERFACE]"
     );
 }
 
@@ -151,12 +154,34 @@ fn run_daemon() -> Result<()> {
     );
 
     let mut last_periodic_sync: Option<Instant> = None;
+    let mut health_scheduler = HealthCheckScheduler::default();
 
     loop {
-        thread::sleep(Duration::from_secs(60));
+        thread::sleep(Duration::from_secs(10));
 
         let config = Config::load();
-        if !config.enabled || !config.periodic_sync_enabled {
+        if !config.enabled {
+            continue;
+        }
+
+        match open_database(&config.db_path).and_then(|conn| {
+            let result =
+                check_interface_groups(&conn, &config, Some(&mut health_scheduler), false)?;
+            if result.changed && config.route_policy_enabled {
+                apply_routes(&conn, &config)?;
+            }
+            Ok(result)
+        }) {
+            Ok(result) if result.checked_groups > 0 && result.changed => {
+                println!("soya-asn-router: interface group failover state changed")
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("soya-asn-router: interface group health check failed: {error:#}")
+            }
+        }
+
+        if !config.periodic_sync_enabled {
             continue;
         }
 
@@ -213,6 +238,7 @@ fn print_status() -> Result<()> {
         },
         sync: read_sync_status(&conn)?,
         policy: read_policy_status(&conn, config.route_policy_enabled)?,
+        interface_groups: read_interface_group_statuses(&conn, &config.interface_groups)?,
         asns: read_configured_asn_status(&conn, &config.asns)?,
     };
 
@@ -302,6 +328,18 @@ fn run_preview_routes() -> Result<()> {
     serde_json::to_writer(std::io::stdout(), &result)?;
     println!();
     Ok(())
+}
+
+fn run_check_groups() -> Result<()> {
+    let config = Config::load();
+    let conn = open_database(&config.db_path)?;
+    let result = check_interface_groups(&conn, &config, None, true)?;
+
+    if result.changed && config.route_policy_enabled {
+        apply_routes(&conn, &config)?;
+    }
+
+    print_status()
 }
 
 fn run_apply_routes(apply: bool) -> Result<()> {
