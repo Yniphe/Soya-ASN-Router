@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=soya-asn-router
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=12
+PKG_RELEASE:=13
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
@@ -38,7 +38,7 @@ define Package/soya-asn-router
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Soya ASN Router Rust backend
-  DEPENDS:=$(if $(CONFIG_SOYA_ASN_ROUTER_BUILD_FROM_SOURCE),$(RUST_ARCH_DEPENDS)) +curl +ip-tiny +jshn +kmod-nft-core +nftables-json +rpcd +ubus +uci
+  DEPENDS:=$(if $(CONFIG_SOYA_ASN_ROUTER_BUILD_FROM_SOURCE),$(RUST_ARCH_DEPENDS)) +curl +ip +jshn +kmod-nft-core +nftables-json +rpcd +ubus +uci
 endef
 
 define Package/soya-asn-router/config

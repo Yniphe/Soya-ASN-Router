@@ -259,8 +259,8 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r12 -m "soya-asn-router v0.1.0-r12"
-git push origin v0.1.0-r12
+git tag -a v0.1.0-r13 -m "soya-asn-router v0.1.0-r13"
+git push origin v0.1.0-r13
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
