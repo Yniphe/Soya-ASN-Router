@@ -10,6 +10,14 @@ var statusSummary = null;
 var pollRegistered = false;
 var latestStatus = null;
 var routeToggleButton = null;
+var statusSelectAll = null;
+var bulkInterfaceSelect = null;
+var bulkSelectedCount = null;
+var bulkDeleteButton = null;
+var bulkSetInterfaceButton = null;
+var selectedAsns = {};
+var actionWidgets = {};
+var actionInFlight = false;
 
 var callStatus = rpc.declare({
 	object: 'soya-asn-router',
@@ -41,6 +49,12 @@ var callApplyRoutes = rpc.declare({
 	expect: { '': {} }
 });
 
+var callPreviewRoutes = rpc.declare({
+	object: 'soya-asn-router',
+	method: 'preview_routes',
+	expect: { '': {} }
+});
+
 var callPauseRoutes = rpc.declare({
 	object: 'soya-asn-router',
 	method: 'pause_routes',
@@ -63,6 +77,20 @@ var callImportUrl = rpc.declare({
 	object: 'soya-asn-router',
 	method: 'import_url',
 	params: [ 'url', 'interface' ],
+	expect: { '': {} }
+});
+
+var callBulkDelete = rpc.declare({
+	object: 'soya-asn-router',
+	method: 'bulk_delete',
+	params: [ 'asns' ],
+	expect: { '': {} }
+});
+
+var callBulkSetInterface = rpc.declare({
+	object: 'soya-asn-router',
+	method: 'bulk_set_interface',
+	params: [ 'asns', 'interface' ],
 	expect: { '': {} }
 });
 
@@ -141,13 +169,111 @@ function addInterfaceValues(option, interfaces) {
 	});
 }
 
+function selectedAsnList() {
+	return Object.keys(selectedAsns).sort();
+}
+
+function cleanupSelection(data) {
+	var available = {};
+
+	((data && data.asns) || []).forEach(function(item) {
+		available[item.asn] = true;
+	});
+
+	Object.keys(selectedAsns).forEach(function(asn) {
+		if (!available[asn])
+			delete selectedAsns[asn];
+	});
+}
+
+function statusBusy(data) {
+	return actionInFlight || !!(data && data.sync && data.sync.running);
+}
+
+function setDisabled(node, disabled) {
+	var controls;
+
+	if (!node)
+		return;
+
+	controls = node.matches && node.matches('button,input,select')
+		? [ node ]
+		: node.querySelectorAll('button,input,select');
+
+	Array.prototype.forEach.call(controls, function(control) {
+		control.disabled = disabled;
+	});
+}
+
+function registerActionWidget(key, widget) {
+	actionWidgets[key] = widget;
+	updateActionState(latestStatus);
+	return widget;
+}
+
+function updateActionState(data) {
+	var busy = statusBusy(data);
+
+	[ 'sync_missing', 'sync_all', 'apply_routes', 'preview_routes', 'toggle_routes', 'import_asns' ].forEach(function(key) {
+		setDisabled(actionWidgets[key], busy);
+	});
+
+	updateBulkControls(data);
+}
+
+function updateBulkControls(data) {
+	var list, busy, allVisibleSelected, visibleAsns;
+
+	cleanupSelection(data);
+	list = selectedAsnList();
+	busy = statusBusy(data);
+	visibleAsns = ((data && data.asns) || []).map(function(item) {
+		return item.asn;
+	});
+	allVisibleSelected = visibleAsns.length > 0 && visibleAsns.every(function(asn) {
+		return !!selectedAsns[asn];
+	});
+
+	if (bulkSelectedCount)
+		bulkSelectedCount.textContent = _('%d selected').format(list.length);
+
+	if (bulkDeleteButton)
+		bulkDeleteButton.disabled = busy || list.length === 0;
+
+	if (bulkSetInterfaceButton)
+		bulkSetInterfaceButton.disabled = busy || list.length === 0 || !bulkInterfaceSelect || !bulkInterfaceSelect.value;
+
+	if (bulkInterfaceSelect)
+		bulkInterfaceSelect.disabled = busy;
+
+	if (statusSelectAll) {
+		statusSelectAll.checked = allVisibleSelected;
+		statusSelectAll.indeterminate = !allVisibleSelected && list.length > 0;
+		statusSelectAll.disabled = busy || visibleAsns.length === 0;
+	}
+}
+
+function selectVisibleAsns(data, selected) {
+	((data && data.asns) || []).forEach(function(item) {
+		if (selected)
+			selectedAsns[item.asn] = true;
+		else
+			delete selectedAsns[item.asn];
+	});
+
+	if (statusBody)
+		statusBody.replaceChildren.apply(statusBody, renderRows(data || { asns: [] }));
+
+	updateBulkControls(data);
+}
+
 function renderRows(data) {
 	var asns = data.asns || [];
 
 	if (asns.length === 0) {
 		return [
 			E('tr', { 'class': 'tr placeholder' }, [
-				E('td', { 'class': 'td', 'colspan': 9 }, [
+				E('td', { 'class': 'td', 'colspan': 10 }, [
 					E('em', {}, [ _('No ASNs configured.') ])
 				])
 			])
@@ -155,7 +281,28 @@ function renderRows(data) {
 	}
 
 	return asns.map(function(item) {
+		var checkboxAttrs = { 'type': 'checkbox' };
+		var checkbox;
+
+		if (selectedAsns[item.asn])
+			checkboxAttrs.checked = 'checked';
+
+		if (statusBusy(data))
+			checkboxAttrs.disabled = 'disabled';
+
+		checkbox = E('input', checkboxAttrs);
+
+		checkbox.addEventListener('change', function() {
+			if (checkbox.checked)
+				selectedAsns[item.asn] = true;
+			else
+				delete selectedAsns[item.asn];
+
+			updateBulkControls(latestStatus);
+		});
+
 		return E('tr', { 'class': 'tr' }, [
+			E('td', { 'class': 'td' }, [ checkbox ]),
 			E('td', { 'class': 'td' }, [ item.asn ]),
 			E('td', { 'class': 'td' }, [ formatValue(item.provider_name) ]),
 			E('td', { 'class': 'td' }, [ item.enabled ? _('yes') : _('no') ]),
@@ -172,20 +319,35 @@ function renderRows(data) {
 function renderSummary(data) {
 	var sync = data.sync || {};
 	var policy = data.policy || {};
+	var periodic = data.periodic_sync || {};
 	var syncState = sync.running
-		? _('Synchronization is running (%s).').format(sync.mode || _('unknown'))
+		? _('Synchronization is running (%s): %d/%d, failed: %d%s.').format(
+			sync.mode || _('unknown'),
+			sync.completed || 0,
+			sync.total || 0,
+			sync.failed || 0,
+			sync.current_asn ? ', ' + sync.current_asn : ''
+		)
 		: _('Synchronization is idle.');
 	var policyState = _('Policy: %s, IPv4 prefixes: %d, interfaces: %d.').format(
 		policy.enabled === false ? _('paused') : policyText(policy.state),
 		policy.ipv4_prefix_count || 0,
 		policy.interface_count || 0
 	);
+	var periodicState = periodic.enabled
+		? _('Periodic sync: every %d minute(s), mode: %s.').format(
+			periodic.interval_minutes || 0,
+			periodic.mode || _('unknown')
+		)
+		: _('Periodic sync: disabled.');
 
 	if (policy.last_error)
 		policyState += ' ' + _('Error: %s').format(policy.last_error);
 
 	return [
 		E('span', {}, [ syncState ]),
+		E('br'),
+		E('span', {}, [ periodicState ]),
 		E('br'),
 		E('span', {}, [ policyState ]),
 		E('br'),
@@ -225,15 +387,21 @@ function updateRouteToggleButton(data) {
 	});
 }
 
+function applyStatus(data) {
+	if (!data || !statusBody || !statusSummary)
+		return;
+
+	latestStatus = data;
+	cleanupSelection(data);
+	statusBody.replaceChildren.apply(statusBody, renderRows(data));
+	statusSummary.replaceChildren.apply(statusSummary, renderSummary(data));
+	updateRouteToggleButton(data);
+	updateActionState(data);
+}
+
 function updateStatus() {
 	return L.resolveDefault(callStatus(), null).then(function(data) {
-		if (!data || !statusBody || !statusSummary)
-			return;
-
-		latestStatus = data;
-		statusBody.replaceChildren.apply(statusBody, renderRows(data));
-		statusSummary.replaceChildren.apply(statusSummary, renderSummary(data));
-		updateRouteToggleButton(data);
+		applyStatus(data);
 	});
 }
 
@@ -248,9 +416,20 @@ function notifyInfo(message) {
 }
 
 function runAction(call) {
-	return call().then(function() {
-		return updateStatus();
-	}).catch(notifyError);
+	actionInFlight = true;
+	updateActionState(latestStatus);
+
+	return call().then(function(result) {
+		if (result && result.policy && result.asns)
+			applyStatus(result);
+		else
+			return updateStatus();
+	}).catch(notifyError).then(function() {
+		actionInFlight = false;
+		updateActionState(latestStatus);
+		window.setTimeout(updateStatus, 600);
+		window.setTimeout(updateStatus, 2000);
+	});
 }
 
 function cleanupConfig() {
@@ -311,6 +490,102 @@ function importFromUrl(url, iface) {
 			window.location.reload();
 		}, 900);
 	});
+}
+
+function reloadSoon() {
+	window.setTimeout(function() {
+		window.location.reload();
+	}, 900);
+}
+
+function bulkDeleteSelected() {
+	var list = selectedAsnList();
+
+	if (list.length === 0)
+		return Promise.resolve();
+
+	if (!window.confirm(_('Delete selected ASN row(s)?')))
+		return Promise.resolve();
+
+	actionInFlight = true;
+	updateActionState(latestStatus);
+
+	return callBulkDelete(list.join(' ')).then(function(result) {
+		selectedAsns = {};
+		notifyInfo(_('Deleted %d ASN row(s). Missing: %d.').format(
+			result.deleted || 0,
+			result.missing || 0
+		));
+		return updateStatus();
+	}).then(reloadSoon).catch(notifyError).then(function() {
+		actionInFlight = false;
+		updateActionState(latestStatus);
+	});
+}
+
+function bulkSetInterfaceSelected() {
+	var list = selectedAsnList();
+	var iface = bulkInterfaceSelect ? bulkInterfaceSelect.value : '';
+
+	if (list.length === 0 || !iface)
+		return Promise.resolve();
+
+	actionInFlight = true;
+	updateActionState(latestStatus);
+
+	return callBulkSetInterface(list.join(' '), iface).then(function(result) {
+		notifyInfo(_('Updated %d ASN row(s) to %s. Missing: %d.').format(
+			result.updated || 0,
+			result.interface || iface,
+			result.missing || 0
+		));
+		return updateStatus();
+	}).then(reloadSoon).catch(notifyError).then(function() {
+		actionInFlight = false;
+		updateActionState(latestStatus);
+	});
+}
+
+function renderBulkControls(interfaces) {
+	bulkSelectedCount = E('span', { 'class': 'cbi-value-description' }, [ _('0 selected') ]);
+	bulkInterfaceSelect = E('select', { 'class': 'cbi-input-select' },
+		interfaces.map(function(item) {
+			return E('option', { 'value': item.name }, [ interfaceLabel(item) ]);
+		})
+	);
+	bulkSetInterfaceButton = E('button', {
+		'class': 'btn cbi-button cbi-button-action'
+	}, [ _('Set interface') ]);
+	bulkDeleteButton = E('button', {
+		'class': 'btn cbi-button cbi-button-remove'
+	}, [ _('Delete selected') ]);
+
+	bulkSetInterfaceButton.addEventListener('click', function(ev) {
+		ev.preventDefault();
+		bulkSetInterfaceSelected();
+	});
+
+	bulkDeleteButton.addEventListener('click', function(ev) {
+		ev.preventDefault();
+		bulkDeleteSelected();
+	});
+
+	bulkInterfaceSelect.addEventListener('change', function() {
+		updateBulkControls(latestStatus);
+	});
+
+	return E('div', { 'class': 'cbi-value' }, [
+		E('label', { 'class': 'cbi-value-title' }, [ _('Bulk actions') ]),
+		E('div', { 'class': 'cbi-value-field' }, [
+			bulkSelectedCount,
+			' ',
+			bulkInterfaceSelect,
+			' ',
+			bulkSetInterfaceButton,
+			' ',
+			bulkDeleteButton
+		])
+	]);
 }
 
 function showImportModal(interfaces) {
@@ -382,12 +657,97 @@ function showImportModal(interfaces) {
 	return Promise.resolve();
 }
 
+function renderPreviewRows(preview) {
+	var groups = preview.groups || [];
+
+	if (groups.length === 0) {
+		return [
+			E('tr', { 'class': 'tr placeholder' }, [
+				E('td', { 'class': 'td', 'colspan': 7 }, [
+					E('em', {}, [ _('No IPv4 prefixes are ready to apply.') ])
+				])
+			])
+		];
+	}
+
+	return groups.map(function(group) {
+		return E('tr', { 'class': 'tr' }, [
+			E('td', { 'class': 'td' }, [ group.interface || '-' ]),
+			E('td', { 'class': 'td' }, [ group.device || '-' ]),
+			E('td', { 'class': 'td' }, [ String(group.asn_count || 0) ]),
+			E('td', { 'class': 'td' }, [ String(group.ipv4_prefix_count || 0) ]),
+			E('td', { 'class': 'td' }, [ '0x' + (group.mark || 0).toString(16) ]),
+			E('td', { 'class': 'td' }, [ String(group.table_id || 0) ]),
+			E('td', { 'class': 'td' }, [ formatValue(group.default_route_nexthop) ])
+		]);
+	});
+}
+
+function showRoutePreview() {
+	actionInFlight = true;
+	updateActionState(latestStatus);
+
+	return callPreviewRoutes().then(function(preview) {
+		var applyButton = E('button', {
+			'class': 'btn cbi-button cbi-button-apply'
+		}, [ _('Apply') ]);
+		var cancelButton = E('button', {
+			'class': 'btn cbi-button cbi-button-neutral'
+		}, [ _('Cancel') ]);
+
+		cancelButton.addEventListener('click', function(ev) {
+			ev.preventDefault();
+			ui.hideModal();
+		});
+
+		applyButton.addEventListener('click', function(ev) {
+			ev.preventDefault();
+			applyButton.disabled = true;
+			runAction(callApplyRoutes).then(function() {
+				ui.hideModal();
+			});
+		});
+
+		ui.showModal(_('Route policy preview'), [
+			E('p', {}, [
+				_('IPv4 prefixes: %d, target interfaces: %d.').format(
+					preview.ipv4_prefix_count || 0,
+					preview.interface_count || 0
+				)
+			]),
+			E('table', { 'class': 'table' }, [
+				E('thead', {}, [
+					E('tr', { 'class': 'tr table-titles' }, [
+						E('th', { 'class': 'th' }, [ _('Interface') ]),
+						E('th', { 'class': 'th' }, [ _('Device') ]),
+						E('th', { 'class': 'th' }, [ _('ASNs') ]),
+						E('th', { 'class': 'th' }, [ _('IPv4') ]),
+						E('th', { 'class': 'th' }, [ _('Mark') ]),
+						E('th', { 'class': 'th' }, [ _('Table') ]),
+						E('th', { 'class': 'th' }, [ _('Nexthop') ])
+					])
+				]),
+				E('tbody', {}, renderPreviewRows(preview))
+			]),
+			E('div', { 'class': 'right' }, [
+				cancelButton,
+				' ',
+				applyButton
+			])
+		]);
+	}).catch(notifyError).then(function() {
+		actionInFlight = false;
+		updateActionState(latestStatus);
+	});
+}
+
 function toggleRoutes() {
 	var policy = latestStatus && latestStatus.policy ? latestStatus.policy : {};
 	var call = policy.enabled === false ? callResumeRoutes : callPauseRoutes;
 
 	return runAction(call).then(function() {
 		updateRouteToggleButton(latestStatus);
+		window.setTimeout(updateStatus, 1000);
 	});
 }
 
@@ -398,6 +758,15 @@ function validateAsn(_sectionId, value) {
 	return /^(AS)?[0-9]{1,10}$/i.test(value)
 		? true
 		: _('Use ASN format like AS15169 or 15169.');
+}
+
+function validatePositiveInteger(_sectionId, value) {
+	if (value == null || value === '')
+		return true;
+
+	return /^[0-9]+$/.test(value) && Number(value) > 0
+		? true
+		: _('Use a positive integer.');
 }
 
 return view.extend({
@@ -437,6 +806,24 @@ return view.extend({
 		o.default = '1';
 		o.rmempty = false;
 
+		o = s.option(form.Flag, 'periodic_sync_enabled', _('Periodic synchronization'));
+		o.default = '0';
+		o.rmempty = false;
+
+		o = s.option(form.ListValue, 'periodic_sync_mode', _('Periodic synchronization mode'));
+		o.value('all', _('All configured ASNs'));
+		o.value('missing', _('Missing only'));
+		o.default = 'all';
+		o.depends('periodic_sync_enabled', '1');
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'periodic_sync_interval_minutes', _('Periodic synchronization interval'));
+		o.default = '1440';
+		o.placeholder = '1440';
+		o.depends('periodic_sync_enabled', '1');
+		o.rmempty = false;
+		o.validate = validatePositiveInteger;
+
 		o = s.option(form.Flag, 'proxy_enabled', _('Use proxy'));
 		o.default = '0';
 		o.rmempty = false;
@@ -460,24 +847,43 @@ return view.extend({
 
 		o = s.option(form.Button, '_import_asns', _('Import ASNs from URL'));
 		o.inputstyle = 'action';
+		o.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+			return registerActionWidget('import_asns', form.Button.prototype.renderWidget.call(this, sectionId, optionIndex, cfgvalue));
+		};
 		o.onclick = function() {
 			return showImportModal(interfaces);
 		};
 
 		o = s.option(form.Button, '_sync_missing', _('Synchronize missing'));
 		o.inputstyle = 'action';
+		o.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+			return registerActionWidget('sync_missing', form.Button.prototype.renderWidget.call(this, sectionId, optionIndex, cfgvalue));
+		};
 		o.onclick = function() {
 			return runAction(callSyncMissing);
 		};
 
 		o = s.option(form.Button, '_sync_all', _('Synchronize all'));
 		o.inputstyle = 'apply';
+		o.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+			return registerActionWidget('sync_all', form.Button.prototype.renderWidget.call(this, sectionId, optionIndex, cfgvalue));
+		};
 		o.onclick = function() {
 			return runAction(callSyncAll);
 		};
 
+		o = s.option(form.Button, '_preview_routes', _('Preview route policies'));
+		o.inputstyle = 'action';
+		o.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+			return registerActionWidget('preview_routes', form.Button.prototype.renderWidget.call(this, sectionId, optionIndex, cfgvalue));
+		};
+		o.onclick = showRoutePreview;
+
 		o = s.option(form.Button, '_apply_routes', _('Apply route policies'));
 		o.inputstyle = 'reload';
+		o.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+			return registerActionWidget('apply_routes', form.Button.prototype.renderWidget.call(this, sectionId, optionIndex, cfgvalue));
+		};
 		o.onclick = function() {
 			return runAction(callApplyRoutes);
 		};
@@ -487,6 +893,7 @@ return view.extend({
 		o.inputtitle = routeToggleTitle(latestStatus);
 		o.renderWidget = function(sectionId, optionIndex, cfgvalue) {
 			routeToggleButton = form.Button.prototype.renderWidget.call(this, sectionId, optionIndex, cfgvalue);
+			registerActionWidget('toggle_routes', routeToggleButton);
 			updateRouteToggleButton(latestStatus);
 			return routeToggleButton;
 		};
@@ -518,18 +925,25 @@ return view.extend({
 
 			statusBody = E('tbody', {}, [
 				E('tr', { 'class': 'tr placeholder' }, [
-					E('td', { 'class': 'td', 'colspan': 9 }, [
+					E('td', { 'class': 'td', 'colspan': 10 }, [
 						E('em', {}, [ _('Collecting data ...') ])
 					])
 				])
 			]);
 
+			statusSelectAll = E('input', { 'type': 'checkbox' });
+			statusSelectAll.addEventListener('change', function() {
+				selectVisibleAsns(latestStatus, statusSelectAll.checked);
+			});
+
 			var statusNode = E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, [ _('Synchronization status') ]),
 				statusSummary,
+				renderBulkControls(interfaces),
 				E('table', { 'class': 'table' }, [
 					E('thead', {}, [
 						E('tr', { 'class': 'tr table-titles' }, [
+							E('th', { 'class': 'th' }, [ statusSelectAll ]),
 							E('th', { 'class': 'th' }, [ _('ASN') ]),
 							E('th', { 'class': 'th' }, [ _('Provider') ]),
 							E('th', { 'class': 'th' }, [ _('Enabled') ]),

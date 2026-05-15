@@ -10,26 +10,31 @@ use std::env;
 use std::io::Read;
 use std::process::ExitCode;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::blocking::Client;
 use reqwest::Url;
 use rusqlite::{params, Connection};
 
-use crate::config::{dedupe_asn_config, import_asns_from_text, set_route_policy_enabled, Config};
+use crate::config::{
+    bulk_delete_asns, bulk_set_asn_interface, dedupe_asn_config, import_asns_from_text,
+    set_route_policy_enabled, Config,
+};
 use crate::constants::{ROUTE_START_RETRIES, ROUTE_START_RETRY_DELAY_SECONDS};
 use crate::db::{
     acquire_sync_lock, cleanup_stale_lock, ensure_asn_row, has_successful_sync, mark_asn_error,
     open_database, read_configured_asn_status, read_policy_status, read_sync_status,
-    release_sync_lock, save_prefixes, write_policy_state,
+    release_sync_lock, save_prefixes, update_sync_progress, write_policy_state,
 };
 use crate::policy::{
-    apply_routes, disable_routes, discover_interfaces, generate_route_files,
-    reconcile_route_policy, PolicyStats,
+    apply_routes, disable_routes, discover_interfaces, generate_route_files, preview_routes,
+    reconcile_route_policy,
 };
 use crate::ripe::{build_http_client, fetch_asn_provider, fetch_prefixes};
-use crate::types::{InterfaceChoice, InterfaceListResponse, ProxyStatus, StatusResponse};
+use crate::types::{
+    InterfaceChoice, InterfaceListResponse, PeriodicSyncStatus, ProxyStatus, StatusResponse,
+};
 use crate::util::{now_rfc3339, truncate_error};
 
 const MAX_IMPORT_BYTES: u64 = 256 * 1024;
@@ -41,6 +46,13 @@ enum SyncMode {
 }
 
 impl SyncMode {
+    fn from_str(value: &str) -> Self {
+        match value {
+            "all" => Self::All,
+            _ => Self::Missing,
+        }
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             Self::Missing => "missing",
@@ -67,6 +79,7 @@ fn real_main() -> Result<()> {
         Some("status") => print_status(),
         Some("sync-missing") => run_sync(SyncMode::Missing),
         Some("sync-all") => run_sync(SyncMode::All),
+        Some("preview-routes") => run_preview_routes(),
         Some("apply-routes") => run_apply_routes(true),
         Some("generate-routes") => run_apply_routes(false),
         Some("pause-routes") => run_pause_routes(),
@@ -82,6 +95,21 @@ fn real_main() -> Result<()> {
                 .ok_or_else(|| anyhow!("import-url requires a target interface"))?;
             run_import_url(&url, &target_interface)
         }
+        Some("bulk-delete") => {
+            let asns = args
+                .next()
+                .ok_or_else(|| anyhow!("bulk-delete requires ASN entries"))?;
+            run_bulk_delete(&asns)
+        }
+        Some("bulk-set-interface") => {
+            let asns = args
+                .next()
+                .ok_or_else(|| anyhow!("bulk-set-interface requires ASN entries"))?;
+            let target_interface = args
+                .next()
+                .ok_or_else(|| anyhow!("bulk-set-interface requires a target interface"))?;
+            run_bulk_set_interface(&asns, &target_interface)
+        }
         Some("--help") | Some("-h") => {
             print_usage();
             Ok(())
@@ -92,7 +120,7 @@ fn real_main() -> Result<()> {
 
 fn print_usage() {
     println!(
-        "Usage: soya-asn-router [daemon|status|sync-missing|sync-all|apply-routes|generate-routes|pause-routes|resume-routes|interfaces|dedupe-config|import-url URL INTERFACE]"
+        "Usage: soya-asn-router [daemon|status|sync-missing|sync-all|preview-routes|apply-routes|generate-routes|pause-routes|resume-routes|interfaces|dedupe-config|import-url URL INTERFACE|bulk-delete ASNS|bulk-set-interface ASNS INTERFACE]"
     );
 }
 
@@ -122,8 +150,44 @@ fn run_daemon() -> Result<()> {
         config.db_path.display()
     );
 
+    let mut last_periodic_sync: Option<Instant> = None;
+
     loop {
-        thread::sleep(Duration::from_secs(3600));
+        thread::sleep(Duration::from_secs(60));
+
+        let config = Config::load();
+        if !config.enabled || !config.periodic_sync_enabled {
+            continue;
+        }
+
+        let interval = Duration::from_secs(
+            config
+                .periodic_sync_interval_minutes
+                .max(1)
+                .saturating_mul(60),
+        );
+        if last_periodic_sync
+            .map(|last_sync| last_sync.elapsed() < interval)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        last_periodic_sync = Some(Instant::now());
+        let mode = SyncMode::from_str(&config.periodic_sync_mode);
+
+        match open_database(&config.db_path)
+            .and_then(|mut conn| run_sync_with_config(&mut conn, &config, mode))
+        {
+            Ok(()) => println!(
+                "soya-asn-router: periodic {} synchronization finished",
+                mode.as_str()
+            ),
+            Err(error) => eprintln!(
+                "soya-asn-router: periodic {} synchronization failed: {error:#}",
+                mode.as_str()
+            ),
+        }
     }
 }
 
@@ -137,6 +201,11 @@ fn print_status() -> Result<()> {
         db_path: config.db_path.display().to_string(),
         lan_interface: config.lan_interface.clone(),
         default_target_interface: config.default_target_interface.clone(),
+        periodic_sync: PeriodicSyncStatus {
+            enabled: config.periodic_sync_enabled,
+            mode: config.periodic_sync_mode.clone(),
+            interval_minutes: config.periodic_sync_interval_minutes,
+        },
         proxy: ProxyStatus {
             enabled: config.proxy_enabled,
             proxy_type: config.proxy_type.clone(),
@@ -194,6 +263,20 @@ fn run_import_url(url: &str, target_interface: &str) -> Result<()> {
     Ok(())
 }
 
+fn run_bulk_delete(asns: &str) -> Result<()> {
+    let result = bulk_delete_asns(asns)?;
+    serde_json::to_writer(std::io::stdout(), &result)?;
+    println!();
+    Ok(())
+}
+
+fn run_bulk_set_interface(asns: &str, target_interface: &str) -> Result<()> {
+    let result = bulk_set_asn_interface(asns, target_interface)?;
+    serde_json::to_writer(std::io::stdout(), &result)?;
+    println!();
+    Ok(())
+}
+
 fn print_interfaces() -> Result<()> {
     let response = InterfaceListResponse {
         interfaces: discover_interfaces()?
@@ -211,13 +294,23 @@ fn print_interfaces() -> Result<()> {
     Ok(())
 }
 
+fn run_preview_routes() -> Result<()> {
+    let config = Config::load();
+    let conn = open_database(&config.db_path)?;
+    let result = preview_routes(&conn, &config)?;
+
+    serde_json::to_writer(std::io::stdout(), &result)?;
+    println!();
+    Ok(())
+}
+
 fn run_apply_routes(apply: bool) -> Result<()> {
     let config = Config::load();
-    let mut conn = open_database(&config.db_path)?;
+    let conn = open_database(&config.db_path)?;
 
     let result = if apply {
         set_route_policy_enabled(true)?;
-        apply_routes(&mut conn, &config)
+        apply_routes(&conn, &config)
     } else {
         generate_route_files(&conn, &config)
     };
@@ -267,25 +360,25 @@ fn run_sync(mode: SyncMode) -> Result<()> {
     let config = Config::load();
     let mut conn = open_database(&config.db_path)?;
 
-    if !acquire_sync_lock(&conn, mode.as_str())? {
+    run_sync_with_config(&mut conn, &config, mode)
+}
+
+fn run_sync_with_config(conn: &mut Connection, config: &Config, mode: SyncMode) -> Result<()> {
+    if !acquire_sync_lock(conn, mode.as_str())? {
         println!("soya-asn-router: sync already running");
         return Ok(());
     }
 
-    let sync_result = run_sync_locked(&mut conn, &config, mode);
-    let apply_result = if config.auto_apply_routes && config.route_policy_enabled {
-        apply_routes(&mut conn, &config)
-    } else {
-        Ok(PolicyStats {
-            interface_count: 0,
-            ipv4_prefix_count: 0,
-            warning: None,
-        })
+    let result = match run_sync_locked(conn, config, mode) {
+        Ok(()) if config.auto_apply_routes && config.route_policy_enabled => {
+            apply_routes(conn, config).map(|_| ())
+        }
+        Ok(()) => Ok(()),
+        Err(error) => Err(error),
     };
-    release_sync_lock(&conn);
+    release_sync_lock(conn);
 
-    sync_result?;
-    apply_result.map(|_| ())
+    result
 }
 
 fn run_sync_locked(conn: &mut Connection, config: &Config, mode: SyncMode) -> Result<()> {
@@ -307,6 +400,8 @@ fn run_sync_locked(conn: &mut Connection, config: &Config, mode: SyncMode) -> Re
         SyncMode::All => active_asns.iter().map(|asn| asn.asn.clone()).collect(),
     };
 
+    update_sync_progress(conn, asns.len() as i64, 0, 0, None)?;
+
     let now = now_rfc3339();
     for asn in &asns {
         conn.execute(
@@ -322,12 +417,21 @@ fn run_sync_locked(conn: &mut Connection, config: &Config, mode: SyncMode) -> Re
     }
 
     let client = build_http_client(config)?;
+    let total = asns.len() as i64;
+    let mut completed = 0i64;
+    let mut failed = 0i64;
 
     for asn in asns {
+        update_sync_progress(conn, total, completed, failed, Some(&asn))?;
+
         if let Err(error) = sync_one_asn(conn, &client, &asn) {
             let message = truncate_error(&format!("{error:#}"));
             mark_asn_error(conn, &asn, &message)?;
+            failed += 1;
         }
+
+        completed += 1;
+        update_sync_progress(conn, total, completed, failed, None)?;
     }
 
     Ok(())

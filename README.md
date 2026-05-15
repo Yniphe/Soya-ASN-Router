@@ -228,8 +228,13 @@ The LuCI page supports:
 - optional HTTP or SOCKS5 proxy configuration;
 - synchronizing only ASNs missing from the SQLite database;
 - forcing synchronization of all configured ASNs;
+- periodically synchronizing configured ASNs from the backend daemon;
+- displaying synchronization progress while a sync is running;
+- previewing route policy groups before applying routes;
 - applying LAN-only IPv4 route policies from stored prefixes;
 - pausing and resuming route policy application;
+- bulk deleting selected ASN rows;
+- bulk changing the target interface for selected ASN rows;
 - polling per-ASN status without manually refreshing the page;
 - switching route policy application between Pause and Start from the service
   settings.
@@ -241,10 +246,13 @@ soya-asn-router status
 soya-asn-router interfaces
 soya-asn-router sync-missing
 soya-asn-router sync-all
+soya-asn-router preview-routes
 soya-asn-router generate-routes
 soya-asn-router apply-routes
 soya-asn-router pause-routes
 soya-asn-router resume-routes
 soya-asn-router dedupe-config
 soya-asn-router import-url https://example.com/asns.txt wg0
+soya-asn-router bulk-delete "AS15169 AS32934"
+soya-asn-router bulk-set-interface "AS15169 AS32934" wg1
 ```

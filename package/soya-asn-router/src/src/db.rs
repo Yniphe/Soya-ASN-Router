@@ -52,7 +52,11 @@ fn migrate_database(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS sync_lock (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             mode TEXT NOT NULL,
-            locked_at INTEGER NOT NULL
+            locked_at INTEGER NOT NULL,
+            current_asn TEXT,
+            total INTEGER NOT NULL DEFAULT 0,
+            completed INTEGER NOT NULL DEFAULT 0,
+            failed INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS policy_state (
@@ -69,6 +73,19 @@ fn migrate_database(conn: &Connection) -> Result<()> {
     let _ = conn.execute("ALTER TABLE asn_status ADD COLUMN provider_name TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE asn_status ADD COLUMN provider_updated_at TEXT",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE sync_lock ADD COLUMN current_asn TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE sync_lock ADD COLUMN total INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE sync_lock ADD COLUMN completed INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE sync_lock ADD COLUMN failed INTEGER NOT NULL DEFAULT 0",
         [],
     );
 
@@ -215,12 +232,29 @@ pub fn acquire_sync_lock(conn: &Connection, mode: &str) -> Result<bool> {
 
     let acquired = conn
         .execute(
-            "INSERT INTO sync_lock(id, mode, locked_at) VALUES(1, ?1, ?2)",
+            "INSERT INTO sync_lock(id, mode, locked_at, current_asn, total, completed, failed)
+             VALUES(1, ?1, ?2, NULL, 0, 0, 0)",
             params![mode, now_unix()],
         )
         .is_ok();
 
     Ok(acquired)
+}
+
+pub fn update_sync_progress(
+    conn: &Connection,
+    total: i64,
+    completed: i64,
+    failed: i64,
+    current_asn: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE sync_lock
+         SET total = ?1, completed = ?2, failed = ?3, current_asn = ?4
+         WHERE id = 1",
+        params![total, completed, failed, current_asn],
+    )?;
+    Ok(())
 }
 
 pub fn release_sync_lock(conn: &Connection) {
@@ -238,22 +272,41 @@ pub fn cleanup_stale_lock(conn: &Connection) -> Result<()> {
 pub fn read_sync_status(conn: &Connection) -> Result<SyncStatus> {
     let lock = conn
         .query_row(
-            "SELECT mode, locked_at FROM sync_lock WHERE id = 1",
+            "SELECT mode, locked_at, current_asn, total, completed, failed
+             FROM sync_lock
+             WHERE id = 1",
             [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
         )
         .optional()?;
 
     Ok(match lock {
-        Some((mode, locked_at)) => SyncStatus {
+        Some((mode, locked_at, current_asn, total, completed, failed)) => SyncStatus {
             running: true,
             mode: Some(mode),
             locked_at: Some(locked_at),
+            current_asn,
+            total,
+            completed,
+            failed,
         },
         None => SyncStatus {
             running: false,
             mode: None,
             locked_at: None,
+            current_asn: None,
+            total: 0,
+            completed: 0,
+            failed: 0,
         },
     })
 }

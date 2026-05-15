@@ -6,7 +6,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::constants::{
@@ -23,6 +23,32 @@ pub struct PolicyStats {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RoutePolicyPreview {
+    pub interface_count: i64,
+    pub ipv4_prefix_count: i64,
+    pub groups: Vec<RoutePolicyPreviewGroup>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RoutePolicyPreviewGroup {
+    pub interface: String,
+    pub device: String,
+    pub table_id: u32,
+    pub mark: u32,
+    pub pref: u32,
+    pub asn_count: i64,
+    pub ipv4_prefix_count: i64,
+    pub default_route_nexthop: Option<String>,
+    pub sample_prefixes: Vec<String>,
+}
+
+#[derive(Debug)]
+struct PolicyPlan {
+    lan_device: String,
+    groups: Vec<PolicyGroup>,
+}
+
 #[derive(Debug)]
 struct PolicyGroup {
     interface: String,
@@ -31,6 +57,7 @@ struct PolicyGroup {
     mark: u32,
     pref: u32,
     set_name: String,
+    asn_count: i64,
     prefixes: Vec<String>,
     default_route: Option<NetworkRoute>,
 }
@@ -112,7 +139,65 @@ pub fn discover_interfaces() -> Result<Vec<NetworkInterface>> {
     Ok(dump.interface)
 }
 
+pub fn preview_routes(conn: &Connection, config: &Config) -> Result<RoutePolicyPreview> {
+    let plan = build_policy_plan(conn, config)?;
+    let ipv4_prefix_count = count_prefixes(&plan.groups);
+
+    Ok(RoutePolicyPreview {
+        interface_count: plan.groups.len() as i64,
+        ipv4_prefix_count,
+        groups: plan
+            .groups
+            .into_iter()
+            .map(|group| RoutePolicyPreviewGroup {
+                interface: group.interface,
+                device: group.device,
+                table_id: group.table_id,
+                mark: group.mark,
+                pref: group.pref,
+                asn_count: group.asn_count,
+                ipv4_prefix_count: group.prefixes.len() as i64,
+                default_route_nexthop: group
+                    .default_route
+                    .as_ref()
+                    .and_then(|route| route.nexthop.as_deref())
+                    .map(str::trim)
+                    .filter(|nexthop| !nexthop.is_empty())
+                    .map(ToOwned::to_owned),
+                sample_prefixes: group.prefixes.into_iter().take(10).collect(),
+            })
+            .collect(),
+    })
+}
+
 pub fn generate_route_files(conn: &Connection, config: &Config) -> Result<PolicyStats> {
+    let plan = build_policy_plan(conn, config)?;
+    let ipv4_prefix_count = count_prefixes(&plan.groups);
+
+    let routes_dir = Path::new(ROUTES_NFT_PATH)
+        .parent()
+        .ok_or_else(|| anyhow!("invalid route policy path: {ROUTES_NFT_PATH}"))?;
+    fs::create_dir_all(routes_dir)
+        .with_context(|| format!("failed to create {}", routes_dir.display()))?;
+
+    fs::write(
+        ROUTES_NFT_PATH,
+        render_nft_policy(&plan.lan_device, &plan.groups),
+    )
+    .with_context(|| format!("failed to write {ROUTES_NFT_PATH}"))?;
+    fs::write(ROUTES_SH_PATH, render_route_script(&plan.groups))
+        .with_context(|| format!("failed to write {ROUTES_SH_PATH}"))?;
+    fs::set_permissions(ROUTES_SH_PATH, fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("failed to chmod {ROUTES_SH_PATH}"))?;
+
+    Ok(PolicyStats {
+        interface_count: plan.groups.len() as i64,
+        ipv4_prefix_count,
+        warning: None,
+    })
+}
+
+fn build_policy_plan(conn: &Connection, config: &Config) -> Result<PolicyPlan> {
     let interfaces = discover_interfaces()?;
     let lan = find_interface(&interfaces, &config.lan_interface)
         .with_context(|| format!("LAN interface '{}' was not found", config.lan_interface))?;
@@ -124,8 +209,11 @@ pub fn generate_route_files(conn: &Connection, config: &Config) -> Result<Policy
     })?;
 
     let mut prefix_groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut asn_counts: BTreeMap<String, i64> = BTreeMap::new();
 
     for asn in config.active_asns() {
+        *asn_counts.entry(asn.target_interface.clone()).or_default() += 1;
+
         let entry = prefix_groups
             .entry(asn.target_interface.clone())
             .or_default();
@@ -154,6 +242,7 @@ pub fn generate_route_files(conn: &Connection, config: &Config) -> Result<Policy
             .device_name()
             .with_context(|| format!("target interface '{interface}' does not have a device"))?;
         let offset = index as u32;
+        let asn_count = asn_counts.get(&interface).copied().unwrap_or(0);
 
         groups.push(PolicyGroup {
             set_name: format!("to_{}_{}_v4", offset, sanitize_nft_ident(&interface)),
@@ -163,33 +252,19 @@ pub fn generate_route_files(conn: &Connection, config: &Config) -> Result<Policy
             mark: MARK_BASE + offset,
             pref: RULE_PREF_BASE + offset,
             prefixes: prefixes.into_iter().collect(),
+            asn_count,
             default_route: target.default_ipv4_route().cloned(),
         });
     }
 
-    let ipv4_prefix_count = groups
+    Ok(PolicyPlan { lan_device, groups })
+}
+
+fn count_prefixes(groups: &[PolicyGroup]) -> i64 {
+    groups
         .iter()
         .map(|group| group.prefixes.len() as i64)
-        .sum::<i64>();
-
-    let routes_dir = Path::new(ROUTES_NFT_PATH)
-        .parent()
-        .ok_or_else(|| anyhow!("invalid route policy path: {ROUTES_NFT_PATH}"))?;
-    fs::create_dir_all(routes_dir)
-        .with_context(|| format!("failed to create {}", routes_dir.display()))?;
-
-    fs::write(ROUTES_NFT_PATH, render_nft_policy(&lan_device, &groups))
-        .with_context(|| format!("failed to write {ROUTES_NFT_PATH}"))?;
-    fs::write(ROUTES_SH_PATH, render_route_script(&groups))
-        .with_context(|| format!("failed to write {ROUTES_SH_PATH}"))?;
-    fs::set_permissions(ROUTES_SH_PATH, fs::Permissions::from_mode(0o755))
-        .with_context(|| format!("failed to chmod {ROUTES_SH_PATH}"))?;
-
-    Ok(PolicyStats {
-        interface_count: groups.len() as i64,
-        ipv4_prefix_count,
-        warning: None,
-    })
+        .sum::<i64>()
 }
 
 pub fn apply_routes(conn: &Connection, config: &Config) -> Result<PolicyStats> {

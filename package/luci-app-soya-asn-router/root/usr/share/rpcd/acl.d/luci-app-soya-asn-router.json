@@ -4,13 +4,13 @@
 		"read": {
 			"uci": [ "soya-asn-router" ],
 			"ubus": {
-				"soya-asn-router": [ "status", "interfaces" ]
+				"soya-asn-router": [ "status", "interfaces", "preview_routes" ]
 			}
 		},
 		"write": {
 			"uci": [ "soya-asn-router" ],
 			"ubus": {
-				"soya-asn-router": [ "sync_missing", "sync_all", "apply_routes", "pause_routes", "resume_routes", "dedupe_config", "import_url" ]
+				"soya-asn-router": [ "sync_missing", "sync_all", "apply_routes", "pause_routes", "resume_routes", "dedupe_config", "import_url", "bulk_delete", "bulk_set_interface" ]
 			}
 		}
 	}

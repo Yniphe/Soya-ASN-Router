@@ -6,10 +6,18 @@ pub struct StatusResponse {
     pub db_path: String,
     pub lan_interface: String,
     pub default_target_interface: String,
+    pub periodic_sync: PeriodicSyncStatus,
     pub proxy: ProxyStatus,
     pub sync: SyncStatus,
     pub policy: PolicyStatus,
     pub asns: Vec<AsnStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PeriodicSyncStatus {
+    pub enabled: bool,
+    pub mode: String,
+    pub interval_minutes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -24,6 +32,10 @@ pub struct SyncStatus {
     pub running: bool,
     pub mode: Option<String>,
     pub locked_at: Option<i64>,
+    pub current_asn: Option<String>,
+    pub total: i64,
+    pub completed: i64,
+    pub failed: i64,
 }
 
 #[derive(Debug, Serialize)]

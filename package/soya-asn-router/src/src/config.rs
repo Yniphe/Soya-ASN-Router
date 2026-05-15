@@ -16,6 +16,9 @@ pub struct Config {
     pub lan_interface: String,
     pub default_target_interface: String,
     pub auto_apply_routes: bool,
+    pub periodic_sync_enabled: bool,
+    pub periodic_sync_mode: String,
+    pub periodic_sync_interval_minutes: u64,
     pub route_policy_enabled: bool,
     pub proxy_enabled: bool,
     pub proxy_type: String,
@@ -48,6 +51,21 @@ pub struct AsnImportResult {
     pub asns: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AsnBulkDeleteResult {
+    pub requested: usize,
+    pub deleted: usize,
+    pub missing: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AsnBulkSetInterfaceResult {
+    pub requested: usize,
+    pub updated: usize,
+    pub missing: usize,
+    pub interface: String,
+}
+
 impl Config {
     pub fn load() -> Self {
         let enabled =
@@ -59,6 +77,14 @@ impl Config {
         let auto_apply_routes =
             parse_bool(uci_get("soya-asn-router.main.auto_apply_routes").as_deref())
                 .unwrap_or(true);
+        let periodic_sync_enabled =
+            parse_bool(uci_get("soya-asn-router.main.periodic_sync_enabled").as_deref())
+                .unwrap_or(false);
+        let periodic_sync_mode =
+            normalize_sync_mode(uci_get("soya-asn-router.main.periodic_sync_mode").as_deref());
+        let periodic_sync_interval_minutes = parse_interval_minutes(uci_get(
+            "soya-asn-router.main.periodic_sync_interval_minutes",
+        ));
         let route_policy_enabled = env::var("SOYA_ASN_ROUTER_ROUTE_POLICY_ENABLED")
             .ok()
             .and_then(|value| parse_bool(Some(&value)))
@@ -115,6 +141,9 @@ impl Config {
             lan_interface,
             default_target_interface,
             auto_apply_routes,
+            periodic_sync_enabled,
+            periodic_sync_mode,
+            periodic_sync_interval_minutes,
             route_policy_enabled,
             proxy_enabled,
             proxy_type,
@@ -340,6 +369,89 @@ pub fn import_asns_from_text(text: &str, target_interface: &str) -> Result<AsnIm
     })
 }
 
+pub fn bulk_delete_asns(text: &str) -> Result<AsnBulkDeleteResult> {
+    let requested = parse_asn_set(text);
+    if requested.is_empty() {
+        return Err(anyhow!("no valid ASN entries were provided"));
+    }
+
+    let mut sections = asn_sections(read_committed_sections()?);
+    let requested_count = requested.len();
+    let before = sections.len();
+
+    sections.retain(|section| {
+        section
+            .options
+            .get("asn")
+            .and_then(|value| normalize_asn(value))
+            .map(|asn| !requested.contains(&asn))
+            .unwrap_or(true)
+    });
+
+    let deleted = before.saturating_sub(sections.len());
+    if deleted > 0 {
+        rewrite_asn_sections(&sections)?;
+    }
+
+    Ok(AsnBulkDeleteResult {
+        requested: requested_count,
+        deleted,
+        missing: requested_count.saturating_sub(deleted),
+    })
+}
+
+pub fn bulk_set_asn_interface(
+    text: &str,
+    target_interface: &str,
+) -> Result<AsnBulkSetInterfaceResult> {
+    let requested = parse_asn_set(text);
+    if requested.is_empty() {
+        return Err(anyhow!("no valid ASN entries were provided"));
+    }
+
+    let target_interface = normalize_interface_value(Some(target_interface), "");
+    if target_interface.is_empty() {
+        return Err(anyhow!("target interface is required"));
+    }
+
+    let mut sections = asn_sections(read_committed_sections()?);
+    let mut updated = 0;
+
+    for section in &mut sections {
+        let Some(asn) = section
+            .options
+            .get("asn")
+            .and_then(|value| normalize_asn(value))
+        else {
+            continue;
+        };
+
+        if requested.contains(&asn) {
+            section
+                .options
+                .insert("interface".to_string(), target_interface.clone());
+            updated += 1;
+        }
+    }
+
+    if updated > 0 {
+        rewrite_asn_sections(&sections)?;
+    }
+
+    Ok(AsnBulkSetInterfaceResult {
+        requested: requested.len(),
+        updated,
+        missing: requested.len().saturating_sub(updated),
+        interface: target_interface,
+    })
+}
+
+fn parse_asn_set(text: &str) -> BTreeSet<String> {
+    text.split(|ch: char| ch == ',' || ch == ';' || ch.is_ascii_whitespace())
+        .filter_map(normalize_asn)
+        .collect()
+}
+
 fn asn_sections(sections: Vec<UciSection>) -> Vec<UciSection> {
     sections
         .into_iter()
@@ -477,6 +589,21 @@ fn parse_bool(value: Option<&str>) -> Option<bool> {
         "0" | "false" | "no" | "off" | "disabled" => Some(false),
         _ => None,
     }
+}
+
+fn normalize_sync_mode(value: Option<&str>) -> String {
+    match value.map(str::trim) {
+        Some("missing") => "missing".to_string(),
+        _ => "all".to_string(),
+    }
+}
+
+fn parse_interval_minutes(value: Option<String>) -> u64 {
+    value
+        .as_deref()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1440)
 }
 
 fn uci_get(path: &str) -> Option<String> {
