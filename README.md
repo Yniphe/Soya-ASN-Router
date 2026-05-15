@@ -3,8 +3,8 @@
 [![Build OpenWrt Packages](https://github.com/Yniphe/Soya-ASN-Router/actions/workflows/openwrt-ipk.yml/badge.svg)](https://github.com/Yniphe/Soya-ASN-Router/actions/workflows/openwrt-ipk.yml)
 
 Route traffic for selected internet services through the right OpenWrt
-interface, VPN tunnel, or tunnel failover group, using ASNs instead of manually
-maintained IP lists.
+interface, VPN tunnel, or tunnel failover group, using ASNs plus optional exact
+IPv4/CIDR overrides instead of manually maintained IP lists.
 
 Soya ASN Router is an OpenWrt package with a LuCI app and a small Rust backend.
 It fetches announced prefixes for configured ASNs from RIPEstat, stores them in
@@ -21,6 +21,8 @@ Typical examples:
 - route Google, AWS, Netflix, Meta, Cloudflare, or other provider networks
   through a selected WAN or WireGuard interface;
 - keep corporate SaaS, cloud, or media traffic on a dedicated tunnel;
+- override specific IP addresses or networks when ASN-level routing is too
+  broad;
 - bulk import and manage many ASNs from a plain text URL;
 - preview route policy changes before applying them;
 - pause/resume generated routing policy from LuCI;
@@ -36,6 +38,7 @@ router for LAN-originated IPv4 traffic.
 - Per-ASN target interface selection.
 - ASN import from HTTP/HTTPS URL.
 - Bulk ASN delete and bulk target interface changes.
+- Custom IPv4/CIDR route overrides.
 - RIPEstat ASN holder names in the status table.
 - Sync missing ASNs or force-sync all ASNs.
 - Periodic background synchronization.
@@ -50,23 +53,29 @@ router for LAN-originated IPv4 traffic.
 
 1. You configure ASNs such as `AS15169` or `15169` in LuCI.
 2. The backend fetches announced prefixes from RIPEstat and stores them locally.
-3. Each ASN points to either an OpenWrt interface such as `wan` or `wg0`, or to
-   an interface group such as `group:vpn_main`.
-4. The backend generates:
+3. Optional custom IPv4 routes such as `8.8.8.8/32` can be added for precise
+   overrides.
+4. Each ASN or custom route points to either an OpenWrt interface such as `wan`
+   or `wg0`, or to an interface group such as `group:vpn_main`.
+5. The backend generates:
 
    ```sh
    /etc/soya-asn-router/routes.nft
    /etc/soya-asn-router/routes.sh
    ```
 
-5. nftables marks LAN IPv4 traffic whose destination matches the ASN prefixes.
-6. Linux policy routing sends marked traffic through the selected target
+6. nftables marks LAN IPv4 traffic whose destination matches ASN prefixes or
+   custom routes.
+7. Linux policy routing sends marked traffic through the selected target
    interface.
-7. On daemon startup, enabled route policy is reconciled again, so it survives
+8. On daemon startup, enabled route policy is reconciled again, so it survives
    router reboot.
 
 Route policy is grouped by active target interface: one nft set and one
 fwmark/routing table pair are generated per target.
+
+Custom IPv4 routes are evaluated after ASN prefix rules. If a custom route
+overlaps an ASN prefix and points to a different target, the custom route wins.
 
 ## Interface Groups And Tunnel Failover
 
@@ -97,6 +106,22 @@ met.
 If every tunnel in a group is unhealthy, Soya ASN Router keeps the last active
 interface and reports the group as unhealthy. It does not silently fall back to
 WAN, which avoids accidental VPN traffic leaks.
+
+## Custom IPv4 Route Overrides
+
+Use custom routes for individual addresses or networks that are not convenient
+to express with ASNs.
+
+Examples:
+
+```text
+8.8.8.8/32      -> wan
+203.0.113.0/24  -> group:vpn_main
+```
+
+Destinations accept IPv4 addresses and CIDR networks. A plain IPv4 address is
+treated as `/32`. Domain names are intentionally not resolved in this feature;
+keep DNS/domain-based policy in a separate tool when you need it.
 
 ## Install From A Release
 
@@ -153,10 +178,11 @@ Services -> Soya ASN Router
 
 1. Enable the backend daemon.
 2. Add ASNs manually or import a comma/whitespace-separated ASN list from a URL.
-3. Select a target interface or interface group for each ASN.
-4. Run `Synchronize missing` or `Synchronize all`.
-5. Open `Preview route policies` and verify the generated target groups.
-6. Apply route policies.
+3. Add custom IPv4 routes for exact overrides if needed.
+4. Select a target interface or interface group for each ASN and custom route.
+5. Run `Synchronize missing` or `Synchronize all`.
+6. Open `Preview route policies` and verify the generated target groups.
+7. Apply route policies.
 
 The status tables show synchronization progress, per-ASN prefix counts, route
 policy state, and interface group health.
@@ -259,8 +285,8 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r13 -m "soya-asn-router v0.1.0-r13"
-git push origin v0.1.0-r13
+git tag -a v0.1.0-r14 -m "soya-asn-router v0.1.0-r14"
+git push origin v0.1.0-r14
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
@@ -293,7 +319,7 @@ https://downloads.openwrt.org/releases/<version>/targets/<target>/<subtarget>/
 
 - `soya-asn-router`: Rust backend managed by procd and exposed through rpcd.
 - `luci-app-soya-asn-router`: LuCI UI for ASN sync, route policy, bulk edits,
-  and interface groups.
+  custom IPv4 routes, and interface groups.
 
 Runtime state is stored under:
 

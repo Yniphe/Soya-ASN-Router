@@ -38,7 +38,10 @@ pub struct RoutePolicyPreviewGroup {
     pub mark: u32,
     pub pref: u32,
     pub asn_count: i64,
+    pub custom_route_count: i64,
     pub ipv4_prefix_count: i64,
+    pub asn_ipv4_prefix_count: i64,
+    pub custom_ipv4_prefix_count: i64,
     pub default_route_nexthop: Option<String>,
     pub sample_prefixes: Vec<String>,
 }
@@ -56,10 +59,36 @@ struct PolicyGroup {
     table_id: u32,
     mark: u32,
     pref: u32,
-    set_name: String,
+    asn_set_name: String,
+    custom_set_name: String,
     asn_count: i64,
-    prefixes: Vec<String>,
+    custom_route_count: i64,
+    asn_prefixes: Vec<String>,
+    custom_prefixes: Vec<String>,
     default_route: Option<NetworkRoute>,
+}
+
+impl PolicyGroup {
+    fn ipv4_prefix_count(&self) -> i64 {
+        self.asn_prefixes.len() as i64 + self.custom_prefixes.len() as i64
+    }
+
+    fn sample_prefixes(&self, limit: usize) -> Vec<String> {
+        self.custom_prefixes
+            .iter()
+            .chain(self.asn_prefixes.iter())
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}
+
+#[derive(Debug, Default)]
+struct PrefixGroupBuild {
+    asn_count: i64,
+    custom_route_count: i64,
+    asn_prefixes: BTreeSet<String>,
+    custom_prefixes: BTreeSet<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,22 +178,33 @@ pub fn preview_routes(conn: &Connection, config: &Config) -> Result<RoutePolicyP
         groups: plan
             .groups
             .into_iter()
-            .map(|group| RoutePolicyPreviewGroup {
-                interface: group.interface,
-                device: group.device,
-                table_id: group.table_id,
-                mark: group.mark,
-                pref: group.pref,
-                asn_count: group.asn_count,
-                ipv4_prefix_count: group.prefixes.len() as i64,
-                default_route_nexthop: group
+            .map(|group| {
+                let ipv4_prefix_count = group.ipv4_prefix_count();
+                let asn_ipv4_prefix_count = group.asn_prefixes.len() as i64;
+                let custom_ipv4_prefix_count = group.custom_prefixes.len() as i64;
+                let sample_prefixes = group.sample_prefixes(10);
+                let default_route_nexthop = group
                     .default_route
                     .as_ref()
                     .and_then(|route| route.nexthop.as_deref())
                     .map(str::trim)
                     .filter(|nexthop| !nexthop.is_empty())
-                    .map(ToOwned::to_owned),
-                sample_prefixes: group.prefixes.into_iter().take(10).collect(),
+                    .map(ToOwned::to_owned);
+
+                RoutePolicyPreviewGroup {
+                    interface: group.interface,
+                    device: group.device,
+                    table_id: group.table_id,
+                    mark: group.mark,
+                    pref: group.pref,
+                    asn_count: group.asn_count,
+                    custom_route_count: group.custom_route_count,
+                    ipv4_prefix_count,
+                    asn_ipv4_prefix_count,
+                    custom_ipv4_prefix_count,
+                    default_route_nexthop,
+                    sample_prefixes,
+                }
             })
             .collect(),
     })
@@ -208,22 +248,29 @@ fn build_policy_plan(conn: &Connection, config: &Config) -> Result<PolicyPlan> {
         )
     })?;
 
-    let mut prefix_groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut asn_counts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut prefix_groups: BTreeMap<String, PrefixGroupBuild> = BTreeMap::new();
 
     for asn in config.active_asns() {
         let target_interface = resolve_target_interface(conn, config, &asn.target_interface)?;
+        let group = prefix_groups.entry(target_interface).or_default();
 
-        *asn_counts.entry(target_interface.clone()).or_default() += 1;
-
-        let entry = prefix_groups.entry(target_interface).or_default();
+        group.asn_count += 1;
 
         for prefix in read_ipv4_prefixes(conn, &asn.asn)? {
-            entry.insert(prefix);
+            group.asn_prefixes.insert(prefix);
         }
     }
 
-    prefix_groups.retain(|_, prefixes| !prefixes.is_empty());
+    for route in config.active_custom_routes() {
+        let target_interface = resolve_target_interface(conn, config, &route.target_interface)?;
+        let group = prefix_groups.entry(target_interface).or_default();
+
+        group.custom_route_count += 1;
+        group.custom_prefixes.insert(route.destination.clone());
+    }
+
+    prefix_groups
+        .retain(|_, group| !group.asn_prefixes.is_empty() || !group.custom_prefixes.is_empty());
 
     if prefix_groups.len() as u32 > MAX_POLICY_GROUPS {
         return Err(anyhow!(
@@ -235,24 +282,26 @@ fn build_policy_plan(conn: &Connection, config: &Config) -> Result<PolicyPlan> {
 
     let mut groups = Vec::with_capacity(prefix_groups.len());
 
-    for (index, (interface, prefixes)) in prefix_groups.into_iter().enumerate() {
+    for (index, (interface, prefix_group)) in prefix_groups.into_iter().enumerate() {
         let target = find_interface(&interfaces, &interface)
             .with_context(|| format!("target interface '{interface}' was not found"))?;
         let device = target
             .device_name()
             .with_context(|| format!("target interface '{interface}' does not have a device"))?;
         let offset = index as u32;
-        let asn_count = asn_counts.get(&interface).copied().unwrap_or(0);
 
         groups.push(PolicyGroup {
-            set_name: format!("to_{}_{}_v4", offset, sanitize_nft_ident(&interface)),
+            asn_set_name: format!("to_{}_{}_v4", offset, sanitize_nft_ident(&interface)),
+            custom_set_name: format!("custom_to_{}_{}_v4", offset, sanitize_nft_ident(&interface)),
             interface,
             device,
             table_id: TABLE_ID_BASE + offset,
             mark: MARK_BASE + offset,
             pref: RULE_PREF_BASE + offset,
-            prefixes: prefixes.into_iter().collect(),
-            asn_count,
+            asn_count: prefix_group.asn_count,
+            custom_route_count: prefix_group.custom_route_count,
+            asn_prefixes: prefix_group.asn_prefixes.into_iter().collect(),
+            custom_prefixes: prefix_group.custom_prefixes.into_iter().collect(),
             default_route: target.default_ipv4_route().cloned(),
         });
     }
@@ -276,7 +325,7 @@ fn resolve_target_interface(conn: &Connection, config: &Config, target: &str) ->
 fn count_prefixes(groups: &[PolicyGroup]) -> i64 {
     groups
         .iter()
-        .map(|group| group.prefixes.len() as i64)
+        .map(PolicyGroup::ipv4_prefix_count)
         .sum::<i64>()
 }
 
@@ -363,41 +412,56 @@ fn render_nft_policy(lan_device: &str, groups: &[PolicyGroup]) -> String {
     nft.push_str(&format!("table inet {ROUTE_TABLE_NAME} {{\n"));
 
     for group in groups {
-        nft.push_str(&format!("  set {} {{\n", group.set_name));
-        nft.push_str("    type ipv4_addr\n");
-        nft.push_str("    flags interval\n");
-        nft.push_str("    auto-merge\n");
-        nft.push_str("    elements = {\n");
-
-        for (index, prefix) in group.prefixes.iter().enumerate() {
-            let comma = if index + 1 == group.prefixes.len() {
-                ""
-            } else {
-                ","
-            };
-            nft.push_str(&format!("      {prefix}{comma}\n"));
-        }
-
-        nft.push_str("    }\n");
-        nft.push_str("  }\n\n");
+        render_prefix_set(&mut nft, &group.asn_set_name, &group.asn_prefixes);
+        render_prefix_set(&mut nft, &group.custom_set_name, &group.custom_prefixes);
     }
 
     nft.push_str("  chain prerouting {\n");
     nft.push_str("    type filter hook prerouting priority mangle; policy accept;\n");
 
     for group in groups {
-        nft.push_str(&format!(
-            "    iifname {} ip daddr @{} meta mark set 0x{:x}\n",
-            nft_quote(lan_device),
-            group.set_name,
-            group.mark
-        ));
+        if !group.asn_prefixes.is_empty() {
+            render_mark_rule(&mut nft, lan_device, &group.asn_set_name, group.mark);
+        }
+    }
+
+    for group in groups {
+        if !group.custom_prefixes.is_empty() {
+            render_mark_rule(&mut nft, lan_device, &group.custom_set_name, group.mark);
+        }
     }
 
     nft.push_str("  }\n");
     nft.push_str("}\n");
 
     nft
+}
+
+fn render_prefix_set(nft: &mut String, set_name: &str, prefixes: &[String]) {
+    if prefixes.is_empty() {
+        return;
+    }
+
+    nft.push_str(&format!("  set {set_name} {{\n"));
+    nft.push_str("    type ipv4_addr\n");
+    nft.push_str("    flags interval\n");
+    nft.push_str("    auto-merge\n");
+    nft.push_str("    elements = {\n");
+
+    for (index, prefix) in prefixes.iter().enumerate() {
+        let comma = if index + 1 == prefixes.len() { "" } else { "," };
+        nft.push_str(&format!("      {prefix}{comma}\n"));
+    }
+
+    nft.push_str("    }\n");
+    nft.push_str("  }\n\n");
+}
+
+fn render_mark_rule(nft: &mut String, lan_device: &str, set_name: &str, mark: u32) {
+    nft.push_str(&format!(
+        "    iifname {} ip daddr @{set_name} meta mark set 0x{mark:x}\n",
+        nft_quote(lan_device)
+    ));
 }
 
 fn render_route_script(groups: &[PolicyGroup]) -> String {
@@ -498,4 +562,55 @@ fn sanitize_nft_ident(value: &str) -> String {
     }
 
     ident
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{render_nft_policy, PolicyGroup};
+
+    fn policy_group(
+        interface: &str,
+        mark: u32,
+        asn_prefixes: &[&str],
+        custom_prefixes: &[&str],
+    ) -> PolicyGroup {
+        PolicyGroup {
+            interface: interface.to_string(),
+            device: interface.to_string(),
+            table_id: 1000,
+            mark,
+            pref: 30000,
+            asn_set_name: format!("to_{interface}_v4"),
+            custom_set_name: format!("custom_to_{interface}_v4"),
+            asn_count: asn_prefixes.len() as i64,
+            custom_route_count: custom_prefixes.len() as i64,
+            asn_prefixes: asn_prefixes
+                .iter()
+                .map(|prefix| (*prefix).to_string())
+                .collect(),
+            custom_prefixes: custom_prefixes
+                .iter()
+                .map(|prefix| (*prefix).to_string())
+                .collect(),
+            default_route: None,
+        }
+    }
+
+    #[test]
+    fn custom_prefix_rules_are_rendered_after_asn_rules() {
+        let groups = [
+            policy_group("wan", 0x1200, &["8.8.8.0/24"], &[]),
+            policy_group("wg0", 0x1201, &[], &["8.8.8.8/32"]),
+        ];
+        let nft = render_nft_policy("br-lan", &groups);
+
+        assert!(nft.contains("set to_wan_v4"));
+        assert!(nft.contains("set custom_to_wg0_v4"));
+        assert!(!nft.contains("@custom_to_wan_v4"));
+        assert!(!nft.contains("@to_wg0_v4"));
+
+        let asn_rule = nft.find("@to_wan_v4").expect("missing ASN rule");
+        let custom_rule = nft.find("@custom_to_wg0_v4").expect("missing custom rule");
+        assert!(asn_rule < custom_rule);
+    }
 }

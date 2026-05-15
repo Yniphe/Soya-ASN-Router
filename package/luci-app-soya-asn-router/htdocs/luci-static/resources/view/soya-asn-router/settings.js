@@ -755,7 +755,7 @@ function renderPreviewRows(preview) {
 	if (groups.length === 0) {
 		return [
 			E('tr', { 'class': 'tr placeholder' }, [
-				E('td', { 'class': 'td', 'colspan': 7 }, [
+				E('td', { 'class': 'td', 'colspan': 8 }, [
 					E('em', {}, [ _('No IPv4 prefixes are ready to apply.') ])
 				])
 			])
@@ -767,6 +767,7 @@ function renderPreviewRows(preview) {
 			E('td', { 'class': 'td' }, [ group.interface || '-' ]),
 			E('td', { 'class': 'td' }, [ group.device || '-' ]),
 			E('td', { 'class': 'td' }, [ String(group.asn_count || 0) ]),
+			E('td', { 'class': 'td' }, [ String(group.custom_route_count || 0) ]),
 			E('td', { 'class': 'td' }, [ String(group.ipv4_prefix_count || 0) ]),
 			E('td', { 'class': 'td' }, [ '0x' + (group.mark || 0).toString(16) ]),
 			E('td', { 'class': 'td' }, [ String(group.table_id || 0) ]),
@@ -813,6 +814,7 @@ function showRoutePreview() {
 						E('th', { 'class': 'th' }, [ _('Interface') ]),
 						E('th', { 'class': 'th' }, [ _('Device') ]),
 						E('th', { 'class': 'th' }, [ _('ASNs') ]),
+						E('th', { 'class': 'th' }, [ _('Custom') ]),
 						E('th', { 'class': 'th' }, [ _('IPv4') ]),
 						E('th', { 'class': 'th' }, [ _('Mark') ]),
 						E('th', { 'class': 'th' }, [ _('Table') ]),
@@ -877,6 +879,41 @@ function validateHttpUrl(_sectionId, value) {
 	return /^https?:\/\/[^ ]+$/i.test(value)
 		? true
 		: _('Use an HTTP or HTTPS URL.');
+}
+
+function validateIpv4Cidr(_sectionId, value) {
+	var parts, octets, mask, i, octet;
+
+	if (value == null || value === '')
+		return _('Destination is required.');
+
+	parts = String(value).trim().split('/');
+	if (parts.length > 2 || parts[0] === '')
+		return _('Use an IPv4 address or CIDR like 8.8.8.8 or 8.8.8.0/24.');
+
+	octets = parts[0].split('.');
+	if (octets.length !== 4)
+		return _('Use an IPv4 address or CIDR like 8.8.8.8 or 8.8.8.0/24.');
+
+	for (i = 0; i < octets.length; i++) {
+		if (!/^[0-9]{1,3}$/.test(octets[i]))
+			return _('Use an IPv4 address or CIDR like 8.8.8.8 or 8.8.8.0/24.');
+
+		octet = Number(octets[i]);
+		if (octet < 0 || octet > 255)
+			return _('Use an IPv4 address or CIDR like 8.8.8.8 or 8.8.8.0/24.');
+	}
+
+	if (parts.length === 2) {
+		if (!/^[0-9]{1,2}$/.test(parts[1]))
+			return _('Use a CIDR mask from 0 to 32.');
+
+		mask = Number(parts[1]);
+		if (mask < 0 || mask > 32)
+			return _('Use a CIDR mask from 0 to 32.');
+	}
+
+	return true;
 }
 
 return view.extend({
@@ -1083,6 +1120,29 @@ return view.extend({
 		o = s.option(form.Flag, 'prefer_primary', _('Prefer primary interface'));
 		o.default = '1';
 		o.depends('check_enabled', '1');
+		o.rmempty = false;
+
+		s = m.section(form.GridSection, 'custom_route', _('Custom IPv4 routes'));
+		s.anonymous = true;
+		s.addremove = true;
+		s.sortable = true;
+
+		o = s.option(form.Flag, 'enabled', _('Enabled'));
+		o.default = '1';
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'name', _('Name'));
+		o.placeholder = 'Google DNS';
+		o.rmempty = true;
+
+		o = s.option(form.Value, 'destination', _('Destination'));
+		o.placeholder = '8.8.8.8/32';
+		o.rmempty = false;
+		o.validate = validateIpv4Cidr;
+
+		o = s.option(form.ListValue, 'interface', _('Target interface'));
+		addTargetValues(o, interfaces, groups);
+		o.default = 'wan';
 		o.rmempty = false;
 
 		s = m.section(form.GridSection, 'asn', _('ASNs'));

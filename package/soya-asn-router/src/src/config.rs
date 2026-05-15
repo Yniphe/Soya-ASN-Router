@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -16,6 +17,7 @@ use crate::util::run_status_command;
 pub struct Config {
     pub enabled: bool,
     pub asns: Vec<AsnConfig>,
+    pub custom_routes: Vec<CustomRouteConfig>,
     pub interface_groups: Vec<InterfaceGroupConfig>,
     pub lan_interface: String,
     pub default_target_interface: String,
@@ -33,6 +35,14 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize)]
 pub struct AsnConfig {
     pub asn: String,
+    pub target_interface: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CustomRouteConfig {
+    pub name: Option<String>,
+    pub destination: String,
     pub target_interface: String,
     pub enabled: bool,
 }
@@ -120,6 +130,7 @@ impl Config {
             .map(|output| parse_uci_sections("soya-asn-router", &output))
             .unwrap_or_default();
         let mut asns = load_asn_sections(&sections, &default_target_interface);
+        let custom_routes = load_custom_route_sections(&sections, &default_target_interface);
         let interface_groups = load_interface_group_sections(&sections);
 
         if asns.is_empty() {
@@ -167,6 +178,7 @@ impl Config {
         Self {
             enabled,
             asns,
+            custom_routes,
             interface_groups,
             lan_interface,
             default_target_interface,
@@ -184,6 +196,13 @@ impl Config {
 
     pub fn active_asns(&self) -> Vec<&AsnConfig> {
         self.asns.iter().filter(|asn| asn.enabled).collect()
+    }
+
+    pub fn active_custom_routes(&self) -> Vec<&CustomRouteConfig> {
+        self.custom_routes
+            .iter()
+            .filter(|route| route.enabled)
+            .collect()
     }
 
     pub fn active_interface_groups(&self) -> Vec<&InterfaceGroupConfig> {
@@ -315,6 +334,32 @@ fn load_interface_group_sections(sections: &[UciSection]) -> Vec<InterfaceGroupC
         .collect()
 }
 
+fn load_custom_route_sections(
+    sections: &[UciSection],
+    default_target_interface: &str,
+) -> Vec<CustomRouteConfig> {
+    sections
+        .iter()
+        .filter(|section| section.section_type.as_deref() == Some("custom_route"))
+        .filter_map(|section| {
+            Some(CustomRouteConfig {
+                name: section
+                    .options
+                    .get("name")
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty()),
+                destination: normalize_ipv4_prefix(section.options.get("destination")?)?,
+                target_interface: normalize_interface_value(
+                    section.options.get("interface").map(String::as_str),
+                    default_target_interface,
+                ),
+                enabled: parse_bool(section.options.get("enabled").map(String::as_str))
+                    .unwrap_or(true),
+            })
+        })
+        .collect()
+}
+
 fn dedup_asn_configs(asns: &mut Vec<AsnConfig>) {
     let mut unique = BTreeMap::<String, AsnConfig>::new();
 
@@ -395,6 +440,29 @@ pub fn normalize_asn(value: &str) -> Option<String> {
     }
 
     Some(format!("AS{number}"))
+}
+
+pub fn normalize_ipv4_prefix(value: &str) -> Option<String> {
+    let value = value.trim();
+    let (address, mask) = match value.split_once('/') {
+        Some((address, mask)) => (address.trim(), mask.trim().parse::<u8>().ok()?),
+        None => (value, 32),
+    };
+
+    if mask > 32 {
+        return None;
+    }
+
+    let address = address.parse::<Ipv4Addr>().ok()?;
+    let address = u32::from(address);
+    let mask_bits = if mask == 0 {
+        0
+    } else {
+        u32::MAX << (32 - mask)
+    };
+    let network = Ipv4Addr::from(address & mask_bits);
+
+    Some(format!("{network}/{mask}"))
 }
 
 pub fn dedupe_asn_config() -> Result<AsnDedupeResult> {
@@ -832,4 +900,32 @@ pub fn set_route_policy_enabled(enabled: bool) -> Result<()> {
         Command::new("uci").args(["commit", "soya-asn-router"]),
         "failed to commit route policy UCI setting",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_ipv4_prefix;
+
+    #[test]
+    fn normalizes_ipv4_prefixes() {
+        assert_eq!(
+            normalize_ipv4_prefix("8.8.8.8"),
+            Some("8.8.8.8/32".to_string())
+        );
+        assert_eq!(
+            normalize_ipv4_prefix("8.8.8.9/24"),
+            Some("8.8.8.0/24".to_string())
+        );
+        assert_eq!(
+            normalize_ipv4_prefix("192.0.2.10/0"),
+            Some("0.0.0.0/0".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_ipv4_prefixes() {
+        assert_eq!(normalize_ipv4_prefix("example.com"), None);
+        assert_eq!(normalize_ipv4_prefix("8.8.8.8/33"), None);
+        assert_eq!(normalize_ipv4_prefix("300.8.8.8"), None);
+    }
 }
