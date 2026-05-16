@@ -410,20 +410,73 @@ pub fn group_id_from_target(target: &str) -> Option<&str> {
         .filter(|group_id| !group_id.is_empty())
 }
 
-fn decode_uci_value(value: &str) -> String {
+fn decode_uci_values(value: &str) -> Vec<String> {
     let value = value.trim();
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut chars = value.chars().peekable();
+    let mut quote = None::<char>;
+    let mut started = false;
 
-    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
-        return value[1..value.len() - 1].replace("'\\''", "'");
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            Some('"') => {
+                if ch == '"' {
+                    quote = None;
+                } else if ch == '\\' {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                } else {
+                    current.push(ch);
+                }
+            }
+            _ if ch.is_ascii_whitespace() => {
+                if started {
+                    values.push(current.clone());
+                    current.clear();
+                    started = false;
+                }
+            }
+            _ if ch == '\'' || ch == '"' => {
+                quote = Some(ch);
+                started = true;
+            }
+            _ if ch == '\\' => {
+                started = true;
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            _ => {
+                started = true;
+                current.push(ch);
+            }
+        }
+    }
+
+    if started {
+        values.push(current);
+    }
+
+    if !values.is_empty() {
+        return values;
     }
 
     if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
-        return value[1..value.len() - 1]
+        return vec![value[1..value.len() - 1]
             .replace("\\\"", "\"")
-            .replace("\\\\", "\\");
+            .replace("\\\\", "\\")];
     }
 
-    value.to_string()
+    vec![value.to_string()]
 }
 
 pub fn normalize_asn(value: &str) -> Option<String> {
@@ -703,7 +756,8 @@ fn parse_uci_sections(package: &str, output: &str) -> Vec<UciSection> {
             continue;
         };
 
-        let value = decode_uci_value(value);
+        let values = decode_uci_values(value);
+        let value = values.first().cloned().unwrap_or_default();
         let (section_name, option_name) = match rest.split_once('.') {
             Some((section, option)) => (section, Some(option)),
             None => (rest, None),
@@ -725,10 +779,10 @@ fn parse_uci_sections(package: &str, output: &str) -> Vec<UciSection> {
                 .lists
                 .entry(option_name.to_string())
                 .or_default()
-                .push(value.clone());
+                .extend(values.iter().cloned());
             sections[index]
                 .options
-                .insert(option_name.to_string(), value);
+                .insert(option_name.to_string(), values.join(" "));
         } else {
             sections[index].section_type = Some(value);
         }
@@ -904,7 +958,7 @@ pub fn set_route_policy_enabled(enabled: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_ipv4_prefix;
+    use super::{decode_uci_values, load_interface_group_sections, normalize_ipv4_prefix};
 
     #[test]
     fn normalizes_ipv4_prefixes() {
@@ -927,5 +981,31 @@ mod tests {
         assert_eq!(normalize_ipv4_prefix("example.com"), None);
         assert_eq!(normalize_ipv4_prefix("8.8.8.8/33"), None);
         assert_eq!(normalize_ipv4_prefix("300.8.8.8"), None);
+    }
+
+    #[test]
+    fn decodes_uci_list_values() {
+        assert_eq!(decode_uci_values("'wg0' 'tun0'"), vec!["wg0", "tun0"]);
+        assert_eq!(
+            decode_uci_values("'wg0'\\''backup' 'tun0'"),
+            vec!["wg0'backup", "tun0"]
+        );
+        assert_eq!(decode_uci_values("'VPN Main'"), vec!["VPN Main"]);
+    }
+
+    #[test]
+    fn parses_interface_group_list_values() {
+        let sections = super::parse_uci_sections(
+            "soya-asn-router",
+            "\
+soya-asn-router.@interface_group[0]=interface_group
+soya-asn-router.@interface_group[0].id='vpn_main'
+soya-asn-router.@interface_group[0].interface='wg0' 'tun0'
+",
+        );
+        let groups = load_interface_group_sections(&sections);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].interfaces, vec!["wg0", "tun0"]);
     }
 }
