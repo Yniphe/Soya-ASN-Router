@@ -37,7 +37,7 @@ Typical use cases:
 
 Current release:
 
-https://github.com/Yniphe/Soya-ASN-Router/releases/tag/v0.1.0-r14
+https://github.com/Yniphe/Soya-ASN-Router/releases/tag/v0.1.0-r15
 
 The release includes packages for:
 
@@ -49,15 +49,15 @@ OpenWrt 25.12.2 quick install example:
 ```sh
 cd /tmp
 
-wget -O soya-asn-router-0.1.0-r14.apk \
-  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r14.apk
+wget -O soya-asn-router-0.1.0-r15.apk \
+  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r15.apk
 
-wget -O luci-app-soya-asn-router-r14.apk \
-  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-26.135.82956.4d60497.apk
+wget -O luci-app-soya-asn-router-r15.apk \
+  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-26.136.52279.79b8e2d.apk
 
 apk add --allow-untrusted --force-overwrite \
-  /tmp/soya-asn-router-0.1.0-r14.apk \
-  /tmp/luci-app-soya-asn-router-r14.apk
+  /tmp/soya-asn-router-0.1.0-r15.apk \
+  /tmp/luci-app-soya-asn-router-r15.apk
 
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 /etc/init.d/rpcd reload
@@ -75,7 +75,7 @@ Services -> Soya ASN Router
 ASN preset import URL:
 
 ```text
-https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/soya-asn-router-asns.txt
+https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/soya-asn-router-asns.txt
 ```
 
 This is not a full replacement for every PBR setup. It is focused on router-side

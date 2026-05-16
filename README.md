@@ -148,15 +148,15 @@ Quick install for OpenWrt `25.12.2` on `mediatek/filogic`:
 ```sh
 cd /tmp
 
-wget -O soya-asn-router-0.1.0-r14.apk \
-  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r14.apk
+wget -O soya-asn-router-0.1.0-r15.apk \
+  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r15.apk
 
-wget -O luci-app-soya-asn-router-r14.apk \
-  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-26.135.82956.4d60497.apk
+wget -O luci-app-soya-asn-router-r15.apk \
+  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-26.136.52279.79b8e2d.apk
 
 apk add --allow-untrusted --force-overwrite \
-  /tmp/soya-asn-router-0.1.0-r14.apk \
-  /tmp/luci-app-soya-asn-router-r14.apk
+  /tmp/soya-asn-router-0.1.0-r15.apk \
+  /tmp/luci-app-soya-asn-router-r15.apk
 
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 /etc/init.d/rpcd reload
@@ -168,7 +168,7 @@ rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 ASN preset import URL:
 
 ```text
-https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/soya-asn-router-asns.txt
+https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/soya-asn-router-asns.txt
 ```
 
 For OpenWrt `24.10.x` release assets:
@@ -316,8 +316,8 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r14 -m "soya-asn-router v0.1.0-r14"
-git push origin v0.1.0-r14
+git tag -a v0.1.0-r15 -m "soya-asn-router v0.1.0-r15"
+git push origin v0.1.0-r15
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
