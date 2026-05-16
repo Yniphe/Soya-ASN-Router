@@ -11,6 +11,9 @@ It fetches announced prefixes for configured ASNs from RIPEstat, stores them in
 SQLite, and generates LAN-only IPv4 route policies with nftables marks and Linux
 policy routing.
 
+Keywords: OpenWrt ASN routing, policy based routing, PBR alternative,
+WireGuard split tunneling, LuCI routing, nftables policy routing, VPN failover.
+
 ## Why Use It
 
 Use Soya ASN Router when you want router-level policy routing for whole
@@ -139,6 +142,34 @@ Look at:
 - `release.target`, for example `mediatek/filogic`.
 
 Download the matching assets from the GitHub Release.
+
+Quick install for OpenWrt `25.12.2` on `mediatek/filogic`:
+
+```sh
+cd /tmp
+
+wget -O soya-asn-router-0.1.0-r14.apk \
+  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r14.apk
+
+wget -O luci-app-soya-asn-router-r14.apk \
+  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-26.135.82956.4d60497.apk
+
+apk add --allow-untrusted --force-overwrite \
+  /tmp/soya-asn-router-0.1.0-r14.apk \
+  /tmp/luci-app-soya-asn-router-r14.apk
+
+rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+/etc/init.d/rpcd reload
+/etc/init.d/uhttpd reload
+/etc/init.d/soya-asn-router enable
+/etc/init.d/soya-asn-router restart
+```
+
+ASN preset import URL:
+
+```text
+https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r14/soya-asn-router-asns.txt
+```
 
 For OpenWrt `24.10.x` release assets:
 
