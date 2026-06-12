@@ -138,25 +138,28 @@ ubus call system board
 
 Look at:
 
-- `release.version`, for example `24.10.4`;
+- `release.version`, for example `25.12.4`;
 - `release.target`, for example `mediatek/filogic`.
 
-Download the matching assets from the GitHub Release.
+Download the matching assets from the GitHub Release:
 
-Quick install for OpenWrt `25.12.2` on `mediatek/filogic`:
+- `openwrt-25.12.4-mediatek-filogic-soya-asn-router-0.1.0-r16.apk`;
+- `openwrt-25.12.4-mediatek-filogic-luci-app-soya-asn-router-*.apk`.
+
+Quick install for OpenWrt `25.12.4` on `mediatek/filogic`:
 
 ```sh
 cd /tmp
 
-wget -O soya-asn-router-0.1.0-r15.apk \
-  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/openwrt-25.12.2-mediatek-filogic-soya-asn-router-0.1.0-r15.apk
+wget -O soya-asn-router-0.1.0-r16.apk \
+  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r16/openwrt-25.12.4-mediatek-filogic-soya-asn-router-0.1.0-r16.apk
 
-wget -O luci-app-soya-asn-router-r15.apk \
-  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-26.136.52279.79b8e2d.apk
+# Download the LuCI .apk from the same release page and save it as:
+# /tmp/luci-app-soya-asn-router-r16.apk
 
 apk add --allow-untrusted --force-overwrite \
-  /tmp/soya-asn-router-0.1.0-r15.apk \
-  /tmp/luci-app-soya-asn-router-r15.apk
+  /tmp/soya-asn-router-0.1.0-r16.apk \
+  /tmp/luci-app-soya-asn-router-r16.apk
 
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 /etc/init.d/rpcd reload
@@ -168,31 +171,17 @@ rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 ASN preset import URL:
 
 ```text
-https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r15/soya-asn-router-asns.txt
+https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r16/soya-asn-router-asns.txt
 ```
 
-For OpenWrt `24.10.x` release assets:
+For OpenWrt `25.12.4` `.apk` release assets:
 
 ```sh
-scp openwrt-24.10.4-mediatek-filogic-*.ipk root@192.168.1.1:/tmp/
-ssh root@192.168.1.1
-opkg install \
-  /tmp/openwrt-24.10.4-mediatek-filogic-soya-asn-router_*.ipk \
-  /tmp/openwrt-24.10.4-mediatek-filogic-luci-app-soya-asn-router_*.ipk
-/etc/init.d/rpcd reload
-/etc/init.d/uhttpd reload
-/etc/init.d/soya-asn-router enable
-/etc/init.d/soya-asn-router restart
-```
-
-For OpenWrt `25.x` `.apk` release assets:
-
-```sh
-scp openwrt-25.12.2-mediatek-filogic-*.apk root@192.168.1.1:/tmp/
+scp openwrt-25.12.4-mediatek-filogic-*.apk root@192.168.1.1:/tmp/
 ssh root@192.168.1.1
 apk add --allow-untrusted \
-  /tmp/openwrt-25.12.2-mediatek-filogic-soya-asn-router-*.apk \
-  /tmp/openwrt-25.12.2-mediatek-filogic-luci-app-soya-asn-router-*.apk
+  /tmp/openwrt-25.12.4-mediatek-filogic-soya-asn-router-*.apk \
+  /tmp/openwrt-25.12.4-mediatek-filogic-luci-app-soya-asn-router-*.apk
 /etc/init.d/rpcd reload
 /etc/init.d/uhttpd reload
 /etc/init.d/soya-asn-router enable
@@ -299,9 +288,7 @@ artifacts or as GitHub Release assets.
 
 The current matrix builds packages for:
 
-- OpenWrt `24.10.4`, target `mediatek/filogic`, package arch
-  `aarch64_cortex-a53`;
-- OpenWrt `25.12.2`, target `mediatek/filogic`, package arch
+- OpenWrt `25.12.4`, target `mediatek/filogic`, package arch
   `aarch64_cortex-a53`.
 
 Before tagging a release, update package versions:
@@ -316,8 +303,8 @@ At minimum, bump `PKG_RELEASE` when package contents change. Bump
 Create and push a tag:
 
 ```sh
-git tag -a v0.1.0-r15 -m "soya-asn-router v0.1.0-r15"
-git push origin v0.1.0-r15
+git tag -a v0.1.0-r16 -m "soya-asn-router v0.1.0-r16"
+git push origin v0.1.0-r16
 ```
 
 The workflow runs on `v*` tags. If a GitHub Release with the same tag does not
