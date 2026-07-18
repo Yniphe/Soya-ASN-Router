@@ -29,13 +29,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - openwrt_release: "25.12.4"
+          - openwrt_release: "25.12.5"
             openwrt_target: mediatek/filogic
             target_slug: mediatek-filogic
             package_arch: aarch64_cortex-a53
             rust_target: aarch64-unknown-linux-musl
-            sdk_url: https://downloads.openwrt.org/releases/25.12.4/targets/mediatek/filogic/openwrt-sdk-25.12.4-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            sdk_sha256: 411a2277ca10f909c30275a506aab4dc28a4f1281d7fda4f19faaa2ded6630bb
+            sdk_url: https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-sdk-25.12.5-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: ff4a38a397caa2cfe1c39e18f84ddede14878221b3593c3f2c4cfe24e3ec4c25
 
     steps:
       - name: Checkout

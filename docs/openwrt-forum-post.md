@@ -37,26 +37,26 @@ Typical use cases:
 
 Current release:
 
-https://github.com/Yniphe/Soya-ASN-Router/releases/tag/v0.1.0-r16
+https://github.com/Yniphe/Soya-ASN-Router/releases/tag/v0.1.0-r17
 
 The release includes packages for:
 
-- OpenWrt 25.12.4 mediatek/filogic (`.apk`).
+- OpenWrt 25.12.5 mediatek/filogic (`.apk`).
 
-OpenWrt 25.12.4 quick install example:
+OpenWrt 25.12.5 quick install example:
 
 ```sh
 cd /tmp
 
-wget -O soya-asn-router-0.1.0-r16.apk \
-  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r16/openwrt-25.12.4-mediatek-filogic-soya-asn-router-0.1.0-r16.apk
+wget -O soya-asn-router-0.1.0-r17.apk \
+  https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r17/openwrt-25.12.5-mediatek-filogic-soya-asn-router-0.1.0-r17.apk
 
 # Download the LuCI .apk from the same release page and save it as:
-# /tmp/luci-app-soya-asn-router-r16.apk
+# /tmp/luci-app-soya-asn-router-r17.apk
 
 apk add --allow-untrusted --force-overwrite \
-  /tmp/soya-asn-router-0.1.0-r16.apk \
-  /tmp/luci-app-soya-asn-router-r16.apk
+  /tmp/soya-asn-router-0.1.0-r17.apk \
+  /tmp/luci-app-soya-asn-router-r17.apk
 
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
 /etc/init.d/rpcd reload
@@ -74,7 +74,7 @@ Services -> Soya ASN Router
 ASN preset import URL:
 
 ```text
-https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r16/soya-asn-router-asns.txt
+https://github.com/Yniphe/Soya-ASN-Router/releases/download/v0.1.0-r17/soya-asn-router-asns.txt
 ```
 
 This is not a full replacement for every PBR setup. It is focused on router-side
